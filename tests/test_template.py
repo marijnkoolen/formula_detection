@@ -64,6 +64,7 @@ class TestNgrams(TestCase):
         print(template.term_freq)
         template.calculate_co_occurrence_frequencies()
         print('cooc_freq:', template.cooc_freq)
-        phrases = [phrase for phrase in template.extract_phrases(min_cooc_freq=2)]
+        phrases = [phrase for phrase in template.extract_phrases_from_sents(phrase_type='sub_phrases',
+                                                                            min_cooc_freq=2)]
         print('phrases:', phrases)
         self.assertEqual(len(phrases), 2)

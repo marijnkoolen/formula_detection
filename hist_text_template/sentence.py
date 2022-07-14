@@ -8,7 +8,7 @@ def check_sent_has_terms(sent: list) -> None:
     return None
 
 
-def get_sent_terms(sent: List[Union[str, Dict[str, any]]]) -> List[str]:
+def get_sent_terms(sent: Union[List[str], Dict[str, any]]) -> List[str]:
     if isinstance(sent, dict):
         if 'words' not in sent:
             raise KeyError('sent dictionary should have a key "words" with a list of strings as value')

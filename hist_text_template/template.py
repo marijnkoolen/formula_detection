@@ -1,20 +1,74 @@
-from typing import Generator, Iterable, List, Union
+from typing import Dict, Generator, Iterable, List, Tuple, Union
 from collections import Counter
+from collections import defaultdict
 
 from hist_text_template.vocabulary import Vocabulary, make_selected_vocab
 from hist_text_template.cooccurrence import make_cooc_freq, get_context
 from hist_text_template.sentence import get_sent_terms
 
 
-def make_template_phrase(phrase):
-    return ' '.join([t if t else '<VAR>' for t in phrase])
+class TemplatePhrase:
+
+    def __init__(self, phrase: Union[str, List[str]]):
+        self.phrase_string = transform_template_to_string(phrase)
+        self.phrase_list = transform_template_to_list(phrase)
+
+    def __len__(self):
+        return len(self.phrase_list)
+
+    def __repr__(self):
+        return f'({self.__class__.__name__}={self.phrase_string})'
+
+
+def get_variable_terms_from_match(template_phrase: TemplatePhrase,
+                                  variable_match: List[str]) -> List[str]:
+    variable_terms = []
+    for ti, term in enumerate(template_phrase.phrase_list):
+        if term == '<VAR>':
+            variable_terms.append(variable_match[ti])
+    return variable_terms
+
+
+class TemplatePhraseMatch:
+
+    def __init__(self, template_phrase: TemplatePhrase, char_start: int = None,
+                 word_start: int = None, variable_match: List[str] = None):
+        self.template_phrase = template_phrase
+        self.char_start = None if char_start is None else char_start
+        self.char_end = None if char_start is None else char_start + len(template_phrase.phrase_string)
+        self.word_start = None if word_start is None else word_start
+        self.word_end = None if word_start is None else word_start + len(template_phrase.phrase_list)
+        self.variable_match = None if variable_match is None else variable_match
+        self.variable_terms = []
+        if self.variable_match:
+            self.variable_terms = get_variable_terms_from_match(template_phrase, variable_match)
+
+    def __len__(self):
+        return len(self.template_phrase.phrase_string)
+
+    def __repr__(self):
+        return f'({self.__class__.__name__}, char_start={self.char_start}, ' \
+               f'word_start={self.word_start}, phrase={self.template_phrase.phrase_string})'
+
+
+def make_template_phrase(phrase: Union[str, List[str]]) -> TemplatePhrase:
+    phrase = transform_template_to_list(phrase)
+    phrase = ' '.join([t if t else '<VAR>' for t in phrase])
+    return TemplatePhrase(phrase)
+
+
+def make_template_phrase_match(phrase: Union[str, List[str]],
+                               char_start: int, word_start: int) -> TemplatePhraseMatch:
+    template_phrase = make_template_phrase(phrase)
+    return TemplatePhraseMatch(template_phrase=template_phrase, char_start=char_start,
+                               word_start=word_start)
 
 
 def extract_sub_phrases(phrase: List[str],
-                        max_length: int = 5) -> List[str]:
+                        max_length: int = 5) -> List[List[str]]:
     sub_phrases = []
     for i in range(0, len(phrase) - max_length + 1):
-        sub_phrase = ' '.join(phrase[i:i + max_length])
+        sub_phrase = phrase[i:i + max_length]
         sub_phrases.append(sub_phrase)
     return sub_phrases
 
@@ -76,98 +130,209 @@ class TextTemplateSearch:
         print('minimum frequency lexicon size:', len(self.min_freq_vocab))
         self.coll_size = sum(self.term_freq.values())
 
-    def _get_selected_terms(self, min_cooc_freq: int = None) -> Generator[List[Union[str, None]], None, None]:
+    def _get_selected_terms(self, sent: Union[List[str], Dict[str, any]],
+                            min_cooc_freq: int = None) -> List[Union[str, None]]:
+        words = get_sent_terms(sent)
+        seq_ids = [self.min_freq_vocab.term2id(t) for t in words]
+        seq = [t if t in self.min_freq_vocab.term_id else None for t in words]
+        # print('words:', words)
+        # print('seq:', seq)
+        # print('seq_ids:', seq_ids)
+        selected = []
+        for ti, term1 in enumerate(seq):
+            id1 = seq_ids[ti]
+            if self.term_freq[id1] < min_cooc_freq:
+                selected.append(None)
+                continue
+            terms = []
+            own_index, context_terms, context_ids = get_context(ti, seq, seq_ids)
+            # print('term1:', term1, 'seq index:', ti, 'own_index:', own_index, context_terms, context_ids)
+            for i in range(len(context_terms)):
+                if i == own_index:
+                    continue
+                term2 = context_terms[i]
+                id2 = context_ids[i]
+                if term2 is None:
+                    continue
+                if i < own_index:
+                    if self.cooc_freq[(id2, id1)] < min_cooc_freq:
+                        continue
+                    # print('\tterm2:', term2, 'cooc_freq:', self.cooc_freq[(id2, id1)])
+                else:
+                    if self.cooc_freq[(id1, id2)] < min_cooc_freq:
+                        continue
+                    # print('\tterm2:', term2, 'cooc_freq:', self.cooc_freq[(id1, id2)])
+                terms.append(term2)
+            selected.append(term1 if len(terms) > 0 else None)
+        # print('selected:', selected)
+        return selected
+
+    def _iter_get_sent_and_selected_terms(self, min_cooc_freq: int = None,
+                                          max_sents: int = None) -> Generator[dict, None, None]:
         if min_cooc_freq is None:
             min_cooc_freq = self.min_cooc_freq
         print('Minimum co-occurrence frequency:', min_cooc_freq)
         for si, sent in enumerate(self.sent_iterator):
-            words = get_sent_terms(sent)
-            seq_ids = [self.min_freq_vocab.term2id(t) for t in words]
-            seq = [t if t in self.min_freq_vocab.term_id else None for t in words]
-            # print('words:', words)
-            # print('seq:', seq)
-            # print('seq_ids:', seq_ids)
-            selected = []
-            for ti, term1 in enumerate(seq):
-                id1 = seq_ids[ti]
-                if self.term_freq[id1] < min_cooc_freq:
-                    selected.append(None)
-                    continue
-                terms = []
-                own_index, context_terms, context_ids = get_context(ti, seq, seq_ids)
-                # print('term1:', term1, 'seq index:', ti, 'own_index:', own_index, context_terms, context_ids)
-                for i in range(len(context_terms)):
-                    if i == own_index:
-                        continue
-                    term2 = context_terms[i]
-                    id2 = context_ids[i]
-                    if term2 is None:
-                        continue
-                    if i < own_index:
-                        if self.cooc_freq[(id2, id1)] < min_cooc_freq:
-                            continue
-                        # print('\tterm2:', term2, 'cooc_freq:', self.cooc_freq[(id2, id1)])
-                    else:
-                        if self.cooc_freq[(id1, id2)] < min_cooc_freq:
-                            continue
-                        # print('\tterm2:', term2, 'cooc_freq:', self.cooc_freq[(id1, id2)])
-                    terms.append(term2)
-                selected.append(term1 if len(terms) > 0 else None)
-            # print('selected:', selected)
-            yield selected
+            if max_sents is not None and si >= max_sents:
+                break
+            yield {
+                'sent': sent,
+                'selected': self._get_selected_terms(sent, min_cooc_freq=min_cooc_freq)
+            }
 
-    def extract_phrases(self, min_lenght: int = 3, max_length: int = 5,
-                        min_cooc_freq: int = None):
+    def extract_phrases_from_sents(self, phrase_type: str, min_cooc_freq: int = None,
+                                   max_sents: int = None, *args, **kwargs) -> Generator[TemplatePhraseMatch, None, None]:
         if min_cooc_freq is None:
             min_cooc_freq = self.min_cooc_freq
-        for selected in self._get_selected_terms(min_cooc_freq=min_cooc_freq):
-            phrase = []
-            for ti, term in enumerate(selected):
-                if term is None:
-                    if len(phrase) > min_lenght:
-                        min_term_frac = min([self.term_freq[t] / self.coll_size for t in phrase])
-                        if min_term_frac < self.max_min_term_frac:
-                            sub_phrases = extract_sub_phrases(phrase, max_length=max_length)
-                            for sub_phrase in sub_phrases:
-                                yield sub_phrase
-                        else:
-                            print(min_term_frac, phrase)
-                    phrase = []
-                    continue
-                if term is None and len(phrase) == 0:
-                    continue
-                phrase.append(term)
+        type_extract_func = {
+            'sub_phrases': self._extract_sub_phrases_from_selected,
+            'long_phrases': self._extract_long_phrases_from_selected
+        }
+        if phrase_type not in type_extract_func:
+            accepted_types = "\' \'".join(type_extract_func.keys())
+            raise ValueError(f'invalid phrase_type "{phrase_type}", must be in {accepted_types}')
+        extract_func = type_extract_func[phrase_type]
+        for sent_selected in self._iter_get_sent_and_selected_terms(min_cooc_freq=min_cooc_freq, max_sents=max_sents):
+            for template_phrase_match in extract_func(sent=sent_selected['sent'],
+                                                      selected=sent_selected['selected'],
+                                                      *args, **kwargs):
+                yield template_phrase_match
 
-    def extract_long_phrases(self, min_phrase_lenght: int = 3, max_nones: int = 2,
-                             min_cooc_freq: int = None):
-        for selected in self._get_selected_terms(min_cooc_freq=min_cooc_freq):
-            phrase = []
-            ti = 0
-            while ti < len(selected):
-                term = selected[ti]
-                ti += 1
-                if term is None and phrase.count(None) == max_nones:
-                    if len(phrase) - phrase.count(None) > min_phrase_lenght:
-                        min_term_frac = min([self.term_freq[t] / self.coll_size for t in phrase])
-                        if min_term_frac < self.max_min_term_frac:
-                            template_phrase = make_template_phrase(phrase)
-                            yield template_phrase
-                    phrase = []
-                    continue
-                if term is None and len(phrase) == 0:
-                    continue
-                phrase.append(term)
+    def _extract_sub_phrases_from_selected(self, sent: Dict[str, any], selected: List[Union[str, None]],
+                                           min_lenght: int = 3,
+                                           max_length: int = 5,
+                                           max_variables: int = 0) -> Generator[TemplatePhraseMatch, None, None]:
+        phrase = []
+        word_start = 0
+        print('sent:', sent)
+        words = get_sent_terms(sent)
+        for ti, term in enumerate(selected):
+            if term is None and phrase.count(None) == max_variables:
+                if len(phrase) > min_lenght:
+                    min_term_frac = min([self.term_freq[t] / self.coll_size for t in phrase])
+                    if min_term_frac < self.max_min_term_frac:
+                        sub_phrases = extract_sub_phrases(phrase, max_length=max_length)
+                        for si, sub_phrase in enumerate(sub_phrases):
+                            sub_start = word_start + si
+                            sub_phrase = make_template_phrase(sub_phrase)
+                            variable_match = words[sub_start: sub_start + len(phrase)]
+                            yield TemplatePhraseMatch(sub_phrase, word_start=sub_start,
+                                                      variable_match=variable_match)
+                    else:
+                        print(f'minimum term fraction {min_term_frac} is higher than '
+                              f'max_min_term_frac {self.max_min_term_frac} for phrase {phrase}')
+                phrase = []
+                continue
+            if term is None and len(phrase) == 0:
+                continue
+            elif len(phrase) == 0:
+                word_start = ti
+            phrase.append(term)
 
-    def extract_template_phrases(self, min_lenght: int = 3, max_length: int = 5,
-                                 min_cooc_freq: int = None):
-        for selected in self._get_selected_terms(min_cooc_freq=min_cooc_freq):
+    def _extract_long_phrases_from_selected(self, sent: Dict[str, any], selected: List[Union[str, None]],
+                                            min_phrase_lenght: int = 3,
+                                            max_variables: int = 0) -> Generator[TemplatePhraseMatch, None, None]:
+        phrase = []
+        phrase_start = 0
+        # ti = 0
+        # while ti < len(selected):
+        words = get_sent_terms(sent)
+        for ti, term in enumerate(selected):
+            # term = selected[ti]
+            # ti += 1
+            if term is None and phrase.count(None) == max_variables:
+                if len(phrase) - phrase.count(None) > min_phrase_lenght:
+                    min_term_frac = min([self.term_freq[t] / self.coll_size for t in phrase])
+                    if min_term_frac < self.max_min_term_frac:
+                        template_phrase = make_template_phrase(phrase)
+                        variable_match = words[phrase_start: phrase_start + len(phrase)]
+                        yield TemplatePhraseMatch(template_phrase, word_start=phrase_start,
+                                                  variable_match=variable_match)
+                phrase = []
+            if term is None and len(phrase) == 0:
+                continue
+            elif len(phrase) == 0:
+                phrase_start = ti
+            phrase.append(term)
+
+    def _extract_template_phrases(self, min_lenght: int = 3, max_length: int = 5,
+                                  min_cooc_freq: int = None, max_sents: int = None) -> Tuple[int, TemplatePhraseMatch]:
+        for sent_selected in self._iter_get_sent_and_selected_terms(min_cooc_freq=min_cooc_freq, max_sents=max_sents):
+            selected = sent_selected['selected']
+            sent = sent_selected['sent']
             for ti, term in enumerate(selected[:-max_length + 1]):
                 if term is None:
                     continue
-                phrase = selected[ti:ti + max_length]
+                phrase = []
+                phrase_start = ti
+                for i in range(ti, ti + max_length):
+                    phrase.append(selected[i])
                 if phrase.count(None) >= min_lenght:
                     continue
                 min_term_frac = min([self.term_freq[t] / self.coll_size for t in phrase if t is not None])
                 if min_term_frac < self.max_min_term_frac:
                     template_phrase = make_template_phrase(phrase)
-                    yield template_phrase
+                    variable_match = sent['words'][phrase_start: phrase_start+len(phrase)]
+                    yield TemplatePhraseMatch(template_phrase, word_start=phrase_start,
+                                              variable_match=variable_match)
+
+        return None
+
+    def index_template_sents(self, template_phrases: List[Union[str, List[str]]],
+                             min_cooc_freq: int = None, **kwargs) -> Dict[str, List[str]]:
+        if min_cooc_freq is None:
+            min_cooc_freq = self.min_cooc_freq
+        template_sent_index = defaultdict(list)
+        template_phrases = transform_templates_to_strings(template_phrases)
+        for sent in self.sent_iterator:
+            selected = self._get_selected_terms(sent, min_cooc_freq=min_cooc_freq)
+            for phrase in self._extract_long_phrases_from_selected(selected, **kwargs):
+                if phrase not in template_phrases:
+                    continue
+                template_sent_index[phrase].append(sent['id'])
+        return template_sent_index
+
+    def extract_template_variables(self, templates: List[Union[str, List[str]]],
+                                   min_cooc_freq: int = None, max_sents: int = None, **kwargs):
+        if min_cooc_freq is None:
+            if self.min_cooc_freq is None:
+                raise ValueError(f'no min_cooc_freq passed, nor set in {self.__class__.__name__} instance')
+            min_cooc_freq = self.min_cooc_freq
+        template_set = {t for t in transform_templates_to_strings(templates)}
+        for si, sent in enumerate(self.sent_iterator):
+            if (si+1) >= max_sents:
+                break
+            selected = self._get_selected_terms(sent, min_cooc_freq=min_cooc_freq)
+            for template_phrase_match in self._extract_long_phrases_from_selected(selected, **kwargs):
+                if template_phrase_match.template_phrase.phrase_string in template_set:
+                    # print(template_phrase_match)
+                    # print(template_phrase_match.word_start)
+                    # print(template_phrase_match.word_end)
+                    variable_match = sent['words'][template_phrase_match.word_start: template_phrase_match.word_end]
+                    yield variable_match, template_phrase_match
+
+
+def transform_template_to_list(template: Union[str, List[str]]) -> List[str]:
+    if isinstance(template, str):
+        return template.split(' ')
+    elif isinstance(template, list) is False:
+        raise TypeError(f'template must be str or list of str, not {type(template)}')
+    else:
+        return template
+
+
+def transform_template_to_string(template: Union[str, List[str]]) -> str:
+    if isinstance(template, list):
+        return ' '.join(template)
+    elif isinstance(template, str) is False:
+        raise TypeError(f'template must be str or list of str, not {type(template)}')
+    else:
+        return template
+
+
+def transform_templates_to_lists(templates: List[Union[str, List[str]]]) -> List[List[str]]:
+    return [transform_template_to_list(template) for template in templates]
+
+
+def transform_templates_to_strings(templates: List[Union[str, List[str]]]) -> List[str]:
+    return [transform_template_to_string(template) for template in templates]
