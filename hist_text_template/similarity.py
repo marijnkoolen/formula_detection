@@ -25,7 +25,8 @@ def insert_skips(window: str, skipgram_combinations: List[List[int]]):
             pass
 
 
-def text2skipgrams(text: str, ngram_size: int = 2, skip_size: int = 2) -> Generator[SkipGram, None, None]:
+def text2skipgrams(text: str, ngram_size: int = 2, skip_size: int = 2,
+                   include_boundaries: bool = True) -> Generator[SkipGram, None, None]:
     """Turn a text string into a list of skipgrams.
 
     :param text: an text string
@@ -34,10 +35,13 @@ def text2skipgrams(text: str, ngram_size: int = 2, skip_size: int = 2) -> Genera
     :type ngram_size: int
     :param skip_size: an integer indicating how many skip characters in the ngrams
     :type skip_size: int
+    :param include_boundaries: whether to include begin and end boundary tokens
+    :type include_boundaries: bool
     :return: An iterator returning tuples of skip_gram and offset
     :rtype: Generator[tuple]"""
     if ngram_size <= 0 or skip_size < 0:
         raise ValueError('ngram_size must be a positive integer, skip_size must be a positive integer or zero')
+    text = f'#{text}#' if include_boundaries else text
     indexes = [i for i in range(0, ngram_size + skip_size)]
     skipgram_combinations = [combination for combination in combinations(indexes[1:], ngram_size - 1)]
     for offset in range(0, len(text) - 1):
@@ -91,13 +95,14 @@ class Vocabulary:
 class SkipgramSimilarity:
 
     def __init__(self, ngram_length: int = 3, skip_length: int = 0, terms: List[str] = None,
-                 max_length_diff: int = 2):
+                 max_length_diff: int = 2, include_boundaries: bool = True):
         self.ngram_length = ngram_length
         self.skip_length = skip_length
         self.vocabulary = Vocabulary()
         self.vector_length = {}
         self.max_length_diff = max_length_diff
         self.skipgram_index = defaultdict(lambda: defaultdict(Counter))
+        self.include_boundaries = include_boundaries
         if terms is not None:
             self.index_terms(terms)
 
@@ -114,7 +119,9 @@ class SkipgramSimilarity:
             self._index_term_skips(term)
 
     def _term_to_skip(self, term):
-        skip_gen = text2skipgrams(term, ngram_size=self.ngram_length, skip_size=self.skip_length)
+        skip_gen = text2skipgrams(term, ngram_size=self.ngram_length,
+                                  skip_size=self.skip_length,
+                                  include_boundaries=self.include_boundaries)
         return Counter([skip.string for skip in skip_gen])
 
     def _index_term_skips(self, term: str):

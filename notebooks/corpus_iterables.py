@@ -1,4 +1,4 @@
-from typing import Dict, List, Generator
+from typing import Dict, List, Generator, Union
 import os
 import csv
 import gzip
@@ -286,16 +286,11 @@ def get_stabe_police_sents():
     return StaBeSentences(stabe_files)
 
 
-def get_resolutions_sents(use_random: bool = True, use_normalised: bool = False,
+def get_resolutions_sents(resolution_files: Union[str, List[str]], use_random: bool = True, use_normalised: bool = False,
                           ignorecase: bool = True, include_boundaries: bool = True):
-    data_dir = '/Users/marijnkoolen/Code/Huygens/republic-project/data/paragraphs'
-    if use_normalised is True:
-        res_files = [f'{data_dir}/resolutions-paragraphs-random-normalised.tsv.gz']
-    elif use_random is True:
-        res_files = [f'{data_dir}/resolutions-paragraphs-random.tsv.gz']
-    else:
-        res_files = glob.glob(os.path.join(data_dir, 'resolutions-paragraphs-3*.tsv'))
-    return ResolutionSentences(res_files, ignorecase=ignorecase,
+    if isinstance(resolution_files, str):
+        resolution_files = [resolution_files]
+    return ResolutionSentences(resolution_files, ignorecase=ignorecase,
                                include_boundaries=include_boundaries)
 
 
