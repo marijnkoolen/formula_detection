@@ -93,6 +93,8 @@ def compute_transition_probs(phrases: Union[str, List[str]], context_count: Dict
                              variant_of: Dict[str, str] = None,
                              from_phrase: bool = True,
                              debug: bool = False):
+    if isinstance(phrases, str):
+        phrases = [phrases]
     transition_freq = count_transitions(phrases, context_count, min_word_prob=min_word_prob,
                                         variant_of=variant_of, from_phrase=from_phrase)
     transition_probs = defaultdict(lambda: defaultdict(dict))
@@ -144,6 +146,7 @@ def count_transitions(phrases: Union[str, List[str]], context_count: Dict[str, D
     for direction in {'pre', 'post'}:
         selected_words = select_context_words(phrases, context_count[direction], variant_of,
                                               min_word_prob=min_word_prob)
+        # print('selected_words:', selected_words)
         selected_words.append('<PHRASE>')
         transition_freq[direction] = defaultdict(Counter)
         for phrase in phrases:

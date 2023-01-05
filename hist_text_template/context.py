@@ -1,3 +1,4 @@
+import copy
 from typing import Dict, Iterable, List, Set, Union
 from collections import defaultdict
 from collections import Counter
@@ -7,24 +8,37 @@ from hist_text_template.variants import compute_variant_similarity
 from hist_text_template.transitions import compute_transition_probs
 
 
-def compute_context_word_freq(phrase: str, context_count: Dict[str, Dict[str, Counter]]) -> Dict[str, Counter]:
+def compute_context_word_freq(phrases: Union[str, List[str]], context_count: Dict[str, Dict[str, Counter]]) -> Dict[str, Counter]:
+    if isinstance(phrases, str):
+        phrases = [phrases]
     context_word_freq = defaultdict(Counter)
     for direction in {'pre', 'post'}:
-        for context_phrase in context_count[direction][phrase]:
-            for context_word in context_phrase.split(' '):
-                context_word_freq[direction][context_word] += context_count[direction][phrase][context_phrase]
+        for phrase in phrases:
+            for context_phrase in context_count[direction][phrase]:
+                for context_word in context_phrase.strip().split(' '):
+                    if len(context_word) == 0:
+                        continue
+                    context_word_freq[direction][context_word] += context_count[direction][phrase][context_phrase]
     return context_word_freq
 
 
-def compute_context_skip_sim(phrase: str, context_count: Dict[str, Dict[str, Counter]],
+def compute_context_skip_sim(phrases: Union[str, List[str]], context_count: Dict[str, Dict[str, Counter]],
                              include_boundaries: bool = True) -> SkipgramSimilarity:
-    terms = [w for direction in {'pre', 'post'} for pw in context_count[direction][phrase] for w in pw.split(' ')]
-    return SkipgramSimilarity(ngram_length=2, skip_length=2, terms=terms,
+    if isinstance(phrases, str):
+        phrases = [phrases]
+    terms = set()
+    for direction in {'pre', 'post'}:
+        for phrase in phrases:
+            for pw in context_count[direction][phrase]:
+                for w in pw.split(' '):
+                    if len(w) > 0:
+                        terms.add(w)
+    return SkipgramSimilarity(ngram_length=2, skip_length=2, terms=list(terms),
                               include_boundaries=include_boundaries)
 
 
 def map_word_variants(context_freq: Dict[str, Counter], skip_sim: SkipgramSimilarity,
-                      w2v_model = None, sim_threshold: float = 0.75,
+                      term_freq: Counter = None, w2v_model = None, sim_threshold: float = 0.75,
                       known_variants: Dict[str, str] = None) -> Dict[str, str]:
     variant_of = {}
     mapped = set()
@@ -41,16 +55,36 @@ def map_word_variants(context_freq: Dict[str, Counter], skip_sim: SkipgramSimila
                 continue
             mapped.add(variant_word)
             for sim_word, skip_sim_score in skip_sim.rank_similar(variant_word, top_n=1000):
+                if skip_sim_score < 0.5:
+                    continue
                 scores = [skip_sim_score]
                 if sim_word == variant_word or sim_word in mapped:
                     continue
+                if term_freq is not None:
+                    if term_freq[sim_word] > term_freq[variant_word]:
+                        # print(f'skipping higher frequency variant #{sim_word}# ({term_freq[sim_word]}) of suggestion '
+                        #       f'#{variant_word}# ({term_freq[variant_word]})')
+                        continue
+                    elif term_freq[sim_word] > 1000:
+                        continue
+                    elif term_freq[sim_word] > 100 and term_freq[sim_word] / term_freq[variant_word] > 10:
+                        # print(f'skipping common variant #{sim_word}# ({term_freq[sim_word]}) of suggestion '
+                        #       f'#{variant_word}# ({term_freq[variant_word]}, {skip_sim_score})')
+                        continue
+                    elif term_freq[sim_word] > 100:
+                        # print(f'common variant #{sim_word}# ({term_freq[sim_word]}#, {skip_sim_score}')
+                        pass
                 if w2v_model is not None:
                     if variant_word not in w2v_model.wv or sim_word not in w2v_model.wv:
                         wv_sim_score = 0
                     else:
                         wv_sim_score = w2v_model.wv.similarity(variant_word, sim_word)
                     scores.append(wv_sim_score)
-                variant_score = compute_variant_similarity(variant_word, sim_word)
+                try:
+                    variant_score = compute_variant_similarity(variant_word, sim_word)
+                except ZeroDivisionError:
+                    print(f'direction: {direction}\tvariant_word: #{variant_word}#\tsim_word: #{sim_word}#')
+                    raise
                 scores.append(variant_score)
                 score = sum(scores) / len(scores)
                 if score >= sim_threshold:
@@ -69,16 +103,24 @@ def map_variable_word_variants(variant_freq: Counter, w2v_model = None,
 
 
 def map_context_word_variants(phrases: Union[str, List[str]], context_count: Dict[str, Dict[str, Counter]],
-                              w2v_model=None, sim_threshold: float = 0.75,
+                              term_freq: Counter = None, w2v_model=None, sim_threshold: float = 0.75,
                               known_variants: Dict[str, str] = None,
-                              include_boundaries: bool = True) -> Dict[str, Dict[str, str]]:
-    variant_of = {}
-    phrases = phrases if isinstance(phrases, list) else [phrases]
-    for phrase in phrases:
-        skip_sim = compute_context_skip_sim(phrase, context_count, include_boundaries=include_boundaries)
-        context_word_freq = compute_context_word_freq(phrase, context_count)
-        variant_of[phrase] = map_word_variants(context_word_freq, skip_sim, w2v_model=w2v_model,
-                                               sim_threshold=sim_threshold, known_variants=known_variants)
+                              include_boundaries: bool = True) -> Dict[str, str]:
+    variant_of = copy.deepcopy(known_variants)
+    phrases = phrases if isinstance(phrases, (list,set)) else [phrases]
+    # print('creating skip sim')
+    skip_sim = compute_context_skip_sim(phrases, context_count, include_boundaries=include_boundaries)
+    # print('\tvocabulary:', len(skip_sim.vocabulary))
+    # print('counting context word freq')
+    context_word_freq = compute_context_word_freq(phrases, context_count)
+    tokens = sum(sum(context_word_freq[direction].values()) for direction in {'pre', 'post'})
+    types = sum([len(context_word_freq[direction]) for direction in {'pre', 'post'}])
+    # print(f'\tnum context word types: {types}, tokens: {tokens}')
+    # print('creating variant_map')
+    variant_map = map_word_variants(context_word_freq, skip_sim, term_freq=term_freq,
+                                    w2v_model=w2v_model, sim_threshold=sim_threshold,
+                                    known_variants=known_variants)
+    # print('\tnum variants:', len(variant_map))
     return variant_of
 
 
@@ -153,8 +195,10 @@ def count_pre_post_phrase_context(phrases: Union[List[str], Dict[str, Set[str]]]
                     start = wi - context_size if wi >= context_size else 0
                     pre_words = sent['words'][start:wi]
                     post_words = sent['words'][wi+tup_len:wi+tup_len+context_size]
-                    pre_context_count[main_phrase].update([' '.join(pre_words)])
-                    post_context_count[main_phrase].update([' '.join(post_words)])
+                    if len(pre_words) > 0:
+                        pre_context_count[main_phrase].update([' '.join(pre_words)])
+                    if len(post_words) > 0:
+                        post_context_count[main_phrase].update([' '.join(post_words)])
                     phrase_count.update([main_phrase])
     return {
         'phrase': phrase_count,

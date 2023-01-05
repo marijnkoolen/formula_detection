@@ -114,7 +114,7 @@ class SkipgramSimilarity:
     def index_terms(self, terms: List[str], reset_index: bool = True):
         if reset_index is True:
             self._reset_index()
-        self.vocabulary.index_terms(terms)
+        self.vocabulary.index_terms(terms, reset_index=reset_index)
         for term in terms:
             self._index_term_skips(term)
 
@@ -154,11 +154,13 @@ class SkipgramSimilarity:
             dot_product[term_id] = dot_product[term_id] / (term_vl * self.vector_length[term_id])
         return dot_product
 
-    def rank_similar(self, term: str, top_n: int = 10):
+    def rank_similar(self, term: str, top_n: int = 10, min_score: float = 0.0):
         dot_product = self._compute_dot_product(term)
         top_terms = []
         for term_id in sorted(dot_product, key=lambda t: dot_product[t], reverse=True):
             term = self.vocabulary.id_term[term_id]
+            if dot_product[term_id] < min_score:
+                break
             top_terms.append((term, dot_product[term_id]))
             if len(top_terms) == top_n:
                 break
