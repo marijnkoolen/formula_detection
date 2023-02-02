@@ -303,6 +303,8 @@ def make_bigram_collocation_finder(texts: Iterable, bigram_variant_sets: List[Bi
     :rtype: BigramCollocationFinder
     """
     ufd = nltk.FreqDist()
+    ufd1 = nltk.FreqDist()
+    ufd2 = nltk.FreqDist()
     bfd = nltk.FreqDist()
 
     for pi, text in enumerate(texts):
@@ -314,6 +316,8 @@ def make_bigram_collocation_finder(texts: Iterable, bigram_variant_sets: List[Bi
             bfd[bigram.bigram] += 1
             ufd[bigram.index_token1.token_string] += 1
             ufd[bigram.index_token2.token_string] += 1
+            ufd1[bigram.index_token1.token_string] += 1
+            ufd2[bigram.index_token2.token_string] += 1
         # tokens = merge_bigrams(indexed_tokens, bigram_variant_sets)
         # for window in nltk.ngrams(tokens, window_size, pad_right=True):
         #     w1 = window[0]

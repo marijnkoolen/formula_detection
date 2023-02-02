@@ -53,8 +53,8 @@ class CharterSentences:
                 yield {
                     'doc_id': fname,
                     'para_id': f'{fname}-{pi + 1}',
-                    'text': text,
-                    'words': [w for w in re.split(r'\W+', text) if w != '']
+                    'text': para,
+                    'words': [w for w in re.split(r'\W+', para) if w != '']
                 }
 
 
@@ -260,7 +260,7 @@ def get_novel_sents():
 
 
 def get_review_sents():
-    review_file = '/Users/marijnkoolen/Code/impact-of-fiction/impfic-data-overview/data/review-stats.csv.gz'
+    review_file = '/Users/marijnkoolen/Code/impact-of-fiction/data/reviews/review-stats.csv.gz'
     return ReviewSentences(review_file)
 
 
@@ -286,9 +286,12 @@ def get_stabe_police_sents():
     return StaBeSentences(stabe_files)
 
 
-def get_resolutions_sents(resolution_files: Union[str, List[str]], use_random: bool = True, use_normalised: bool = False,
+def get_resolutions_sents(resolution_files: Union[str, List[str]] = None,
                           ignorecase: bool = True, include_boundaries: bool = True):
-    if isinstance(resolution_files, str):
+    if resolution_files is None:
+        resolution_dir = '/Users/marijnkoolen/Code/Huygens/republic-project/data/paragraphs'
+        resolution_files = [f'{resolution_dir}/resolutions-paragraphs-random.tsv.gz']
+    elif isinstance(resolution_files, str):
         resolution_files = [resolution_files]
     return ResolutionSentences(resolution_files, ignorecase=ignorecase,
                                include_boundaries=include_boundaries)
