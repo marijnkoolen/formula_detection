@@ -1,12 +1,12 @@
 [tool.poetry]
-name = "historical-text-templates"
+name = "formula_detection"
 version = "0.2.0"
-description = "Python tooling to detect templated language use in historical documents"
+description = "Python tooling to detect formulaic language use in text corpora"
 authors = ["Marijn Koolen <marijn.koolen@huygens.knaw.nl>"]
 readme = "README.md"
 license = "MIT"
-homepage = "https://github.com/marijnkoolen/historical-text-templates"
-repository = "https://github.com/marijnkoolen/historical-text-templates"
+homepage = "https://github.com/marijnkoolen/formula_detection"
+repository = "https://github.com/marijnkoolen/formula_detection"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -15,7 +15,7 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
 ]
-packages = [{ include = "hist_text_template" }]
+packages = [{ include = "formula_detection" }]
 
 [tool.poetry.dependencies]
 python = "^3.8,<3.11"
@@ -23,7 +23,7 @@ python = "^3.8,<3.11"
 [tool.poetry.dev-dependencies]
 
 [tool.poetry.urls]
-"Bug Tracker" = "https://github.com/marijnkoolen/historical-text-templates/issues"
+"Bug Tracker" = "https://github.com/marijnkoolen/formula_detection/issues"
 
 [tool.poetry.scripts]
 version = 'poetry_scripts:version'
@@ -44,6 +44,6 @@ push = true
 "pyproject.toml" = [
     'version = "{version}"',
 ]
-"hist_text_template/__init__.py" = [
+"formula_detection/__init__.py" = [
     '__version__ = "{version}"'
 ]

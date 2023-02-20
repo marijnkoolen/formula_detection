@@ -3,9 +3,10 @@ from typing import Dict, Iterable, List, Set, Union
 from collections import defaultdict
 from collections import Counter
 
-from hist_text_template.similarity import SkipgramSimilarity
-from hist_text_template.variants import compute_variant_similarity
-from hist_text_template.transitions import compute_transition_probs
+from fuzzy_search.similarity import SkipgramSimilarity
+
+from formula_detection.variants import compute_variant_similarity
+from formula_detection.transitions import compute_transition_probs
 
 
 def compute_context_word_freq(phrases: Union[str, List[str]], context_count: Dict[str, Dict[str, Counter]]) -> Dict[str, Counter]:

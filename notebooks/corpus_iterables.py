@@ -1,5 +1,4 @@
 from typing import Dict, List, Generator, Union
-import os
 import csv
 import gzip
 import re

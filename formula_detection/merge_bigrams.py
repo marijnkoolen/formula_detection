@@ -1,11 +1,16 @@
 from typing import Dict, Iterable, List, Tuple, Union
 import pickle
+import math
 
 import nltk
 from nltk.collocations import BigramCollocationFinder
 from nltk import FreqDist
 from Levenshtein import distance as levenshtein
 
+
+_SMALL = 1e-20
+
+_ln = math.log
 
 class BigramMerger:
 
@@ -288,8 +293,93 @@ def read_bigrams(bigram_file: str) -> Tuple[BigramCollocationFinder, List[str]]:
     return data['bcf'], data['best_bigrams']
 
 
+class BigramFinder:
+
+    def __init__(self, ufd1, ufd2, bfd, window_size: int = 2):
+        self.ufd1 = ufd1
+        self.ufd2 = ufd2
+        self.bfd = bfd
+        self.window_size = window_size
+        self.N = sum(ufd1.values())
+
+    @staticmethod
+    def _contingency(n_ii, n_ix_xi_tuple, n_xx):
+        """Calculates values of a bigram contingency table from marginal values."""
+        (n_ix, n_xi) = n_ix_xi_tuple
+        n_oi = n_xi - n_ii
+        n_io = n_ix - n_ii
+        return n_ii, n_oi, n_io, n_xx - n_ii - n_oi - n_io
+
+    @staticmethod
+    def _marginals(n_ii, n_oi, n_io, n_oo):
+        """Calculates values of contingency table marginals from its values."""
+        return n_ii, (n_oi + n_ii, n_io + n_ii), n_oo + n_oi + n_io + n_ii
+
+    @staticmethod
+    def _expected_values(cont):
+        """Calculates expected values for a contingency table."""
+        n_xx = sum(cont)
+        # For each contingency table cell
+        for i in range(4):
+            yield (cont[i] + cont[i ^ 1]) * (cont[i] + cont[i ^ 2]) / n_xx
+
+    @classmethod
+    def _likelihood_ratio(cls, *marginals):
+        """Scores ngrams using likelihood ratios as in Manning and Schutze 5.3.4."""
+        cont = cls._contingency(*marginals)
+        return 2 * sum(
+            obs * _ln(obs / (exp + _SMALL) + _SMALL)
+            for obs, exp in zip(cont, cls._expected_values(cont))
+        )
+
+    def score_ngram(self, w1, w2, score_fn=None):
+        """Returns the score for a given bigram using the given scoring
+        function.  Following Church and Hanks (1990), counts are scaled by
+        a factor of 1/(window_size - 1).
+        """
+        if score_fn is None:
+            score_fn = self._likelihood_ratio
+        n_all = self.N
+        # n_ii = self.bfd[(w1, w2)] / (self.window_size - 1.0)
+        n_ii = self.bfd[(w1, w2)]
+        if not n_ii:
+            return
+        n_ix = self.ufd1[w1]
+        n_xi = self.ufd2[w2]
+        return score_fn(n_ii, (n_ix, n_xi), n_all)
+
+    def _score_ngrams(self, score_fn):
+        """Generates of (ngram, score) pairs as determined by the scoring
+        function provided.
+        """
+        for tup in self.bfd:
+            score = self.score_ngram(score_fn, *tup)
+            if score is not None:
+                yield tup, score
+
+    def score_ngrams(self, score_fn):
+        """Returns a sequence of (ngram, score) pairs ordered from highest to
+        lowest score, as determined by the scoring function provided.
+        """
+        return sorted(self._score_ngrams(score_fn), key=lambda t: (-t[1], t[0]))
+
+    def nbest(self, score_fn, n):
+        """Returns the top n ngrams when scored by the given function."""
+        return [p for p, s in self.score_ngrams(score_fn)[:n]]
+
+    def above_score(self, score_fn, min_score):
+        """Returns a sequence of ngrams, ordered by decreasing score, whose
+        scores each exceed the given minimum score.
+        """
+        for ngram, score in self.score_ngrams(score_fn):
+            if score > min_score:
+                yield ngram
+            else:
+                break
+
+
 def make_bigram_collocation_finder(texts: Iterable, bigram_variant_sets: List[BigramVariantSet] = None,
-                                   window_size: int = 3) -> BigramCollocationFinder:
+                                   window_size: int = 3) -> BigramFinder:
     """Create an NLTK BigramCollocationFinder from bigrams generated after applying
     a list of bigram variant sets ot a list of texts.
 
@@ -310,27 +400,17 @@ def make_bigram_collocation_finder(texts: Iterable, bigram_variant_sets: List[Bi
     for pi, text in enumerate(texts):
         indexed_tokens = IndexedTokens(text['words'])
         indexed_tokens.apply_merge_sets(bigram_variant_sets)
-        # for token in indexed_tokens:
-        #     ufd[token.token_string] += 1
+        # unigram count of tokens
+        # ufd.update([indexed_token.token_string for indexed_token in indexed_tokens])
         for bigram in indexed_tokens.get_bigrams(window_size=window_size):
             bfd[bigram.bigram] += 1
-            ufd[bigram.index_token1.token_string] += 1
-            ufd[bigram.index_token2.token_string] += 1
             ufd1[bigram.index_token1.token_string] += 1
             ufd2[bigram.index_token2.token_string] += 1
-        # tokens = merge_bigrams(indexed_tokens, bigram_variant_sets)
-        # for window in nltk.ngrams(tokens, window_size, pad_right=True):
-        #     w1 = window[0]
-        #     if w1 is None:
-        #         continue
-        #     ufd[w1] += 1
-        #     for w2 in window[1:]:
-        #         if w2 is not None:
-        #             bfd[(w1, w2)] += 1
         if (pi+1) >= 1000000:
             break
 
-    return nltk.collocations.BigramCollocationFinder(ufd, bfd, window_size=window_size)
+    return BigramFinder(ufd1, ufd2, bfd, window_size=window_size)
+    # return nltk.collocations.BigramCollocationFinder(ufd, bfd, window_size=window_size)
 
 
 def select_non_overlapping_bigrams(best_bigrams: List[str]) -> List[str]:

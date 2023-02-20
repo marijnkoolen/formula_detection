@@ -2,8 +2,8 @@ from typing import Generator, Iterable, List, Tuple, Union
 from collections import defaultdict
 from collections import Counter
 
-from hist_text_template.vocabulary import Vocabulary
-from hist_text_template.sentence import get_sent_terms
+from formula_detection.vocabulary import Vocabulary
+from formula_detection.sentence import get_sent_terms
 
 
 def get_skip_coocs(seq_ids: List[str], skip_size: int = 0,

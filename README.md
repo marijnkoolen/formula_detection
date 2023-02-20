@@ -1,2 +1,4 @@
-# template-language-use
-Python tooling to detect templated language use
+# Formula Detection
+
+Python tooling to detect formulaic language use in historic documents. 
+

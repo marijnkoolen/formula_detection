@@ -1,7 +1,7 @@
 from typing import Iterable, List
 from collections import Counter
 
-from hist_text_template.sentence import get_sent_terms
+from formula_detection.sentence import get_sent_terms
 
 
 class Vocabulary:
