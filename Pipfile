@@ -7,6 +7,10 @@ name = "pypi"
 levenshtein = "*"
 nltk = "*"
 beautifulsoup4 = "*"
+collatex = "*"
+graphviz = "*"
+fuzzy-search = "*"
+ipykernel = "*"
 
 [dev-packages]
 

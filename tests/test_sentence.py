@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from hist_text_template.sentence import get_sent_terms
+from formula_detection.sentence import get_sent_terms
 
 
 class TestSentence(TestCase):

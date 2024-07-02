@@ -1,12 +1,20 @@
-from typing import Iterable, List
 from collections import Counter
+from typing import Iterable, List, Union
 
-from formula_detection.sentence import get_sent_terms
+from fuzzy_search.tokenization.token import Token
+from fuzzy_search.tokenization.token import Doc
+
+
+def token_to_string(term: Union[str, Token]):
+    if isinstance(term, str):
+        return term
+    elif isinstance(term, Token):
+        return term.n
 
 
 class Vocabulary:
 
-    def __init__(self, terms: List[str] = None):
+    def __init__(self, terms: Union[List[Union[str, Token]], Doc] = None):
         self.term_id = {}
         self.id_term = {}
         if terms is not None:
@@ -22,24 +30,44 @@ class Vocabulary:
         self.term_id = {}
         self.id_term = {}
 
-    def add_term(self, term: str):
+    def _add_term(self, term: Union[str, Token]):
+        # print('_add_term token term:', term, len(self.term_id))
+        # print(self.term_id)
+        term = token_to_string(term)
+        # print('_add_term term:', term, type(term), term in self.term_id)
         if term in self.term_id:
             return self.term_id[term]
         else:
             term_id = len(self.term_id)
+            # print(f'_add_term adding term {term} with term_id {term_id}')
             self.term_id[term] = term_id
+            # print(f'\tlen term_id:', len(self.term_id))
             self.id_term[term_id] = term
             return term_id
 
-    def index_terms(self, terms: List[str], reset_index: bool = True):
+    def index_term(self, term: Union[str, Token]):
+        return self._add_term(term)
+
+    def index_terms(self, terms: Union[List[Union[str, Token]], str, Token, Doc],
+                    reset_index: bool = False):
+        if isinstance(terms, str) or isinstance(terms, Token):
+            terms = [terms]
+        # print('terms:', terms)
         if reset_index is True:
             self.reset_index()
         for term in terms:
+            term = token_to_string(term)
+            # print('index_terms - string token:', term, term in self.term_id)
             if term in self.term_id:
                 continue
-            self.add_term(term)
+            self._add_term(term)
 
-    def term2id(self, term: str):
+    def term2id(self, term: Union[str, Token]):
+        # print('term2id - before:', term)
+        term = token_to_string(term)
+        # print('term2id - after:', term)
+        # print(self.term_id)
+        # print(term in self.term_id, self.term_id[term] if term in self.term_id else 'MISSING')
         return self.term_id[term] if term in self.term_id else None
 
     def id2term(self, term_id: int):
@@ -69,10 +97,9 @@ def make_selected_vocab(full_vocab: Vocabulary, selected_terms: List[str] = None
     return selected_vocab
 
 
-def calculate_term_freq(sent_iterator: Iterable, vocab: Vocabulary) -> Counter:
+def calculate_term_freq(doc_iterator: Iterable, vocab: Vocabulary) -> Counter:
     term_freq = Counter()
-    for si, sent in enumerate(sent_iterator):
-        terms = get_sent_terms(sent)
-        term_ids = [vocab.add_term(term) for term in terms]
+    for di, doc in enumerate(doc_iterator):
+        term_ids = [vocab.index_term(term) for term in doc]
         term_freq.update(term_ids)
     return term_freq

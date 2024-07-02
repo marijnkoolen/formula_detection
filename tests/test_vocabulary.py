@@ -1,7 +1,8 @@
 from unittest import TestCase
 
-from hist_text_template.vocabulary import Vocabulary
-from hist_text_template.vocabulary import make_selected_vocab, calculate_term_freq
+from fuzzy_search.tokenization.token import Tokenizer
+from formula_detection.vocabulary import Vocabulary
+from formula_detection.vocabulary import make_selected_vocab, calculate_term_freq
 
 
 class TestVocabulary(TestCase):
@@ -16,10 +17,10 @@ class TestVocabulary(TestCase):
     def test_vocabulary_can_add_term(self):
         vocab = Vocabulary()
         term = 'nonsense'
-        vocab.add_term(term)
+        vocab.index_terms(term)
         self.assertEqual(term in vocab.term_id, True)
 
-    def test_vocabulary_can_add_multipl_terms(self):
+    def test_vocabulary_can_add_multiple_terms(self):
         vocab = Vocabulary()
         vocab.index_terms(self.sent)
         self.assertEqual(self.sent[2] in vocab.term_id, True)
@@ -53,3 +54,16 @@ class TestVocabulary(TestCase):
         term_freq = calculate_term_freq([self.sent], vocab)
         self.assertEqual(len(term_freq), len(vocab))
 
+
+class TestVocabularyDoc(TestCase):
+
+    def setUp(self) -> None:
+        self.tokenizer = Tokenizer(ignorecase=True)
+        sent = 'this is a sentence'
+        self.doc = self.tokenizer.tokenize(sent)
+        boring_sent = 'this is a bit of a repetitive a sentence with a bit of a repetitive message'
+        self.boring_doc = self.tokenizer.tokenize(boring_sent)
+
+    def test_vocabulary_accepts_doc(self):
+        vocab = Vocabulary(terms=self.doc)
+        self.assertEqual(len(vocab), len(self.doc))

@@ -1,11 +1,11 @@
 import copy
-from typing import Dict, Iterable, List, Set, Union
 from collections import defaultdict
 from collections import Counter
+from typing import Dict, Iterable, List, Set, Union
 
 from fuzzy_search.similarity import SkipgramSimilarity
 
-from formula_detection.variants import compute_variant_similarity
+from formula_detection.variation.edit import compute_variant_similarity
 from formula_detection.transitions import compute_transition_probs
 
 
@@ -30,12 +30,13 @@ def compute_context_skip_sim(phrases: Union[str, List[str]], context_count: Dict
     terms = set()
     for direction in {'pre', 'post'}:
         for phrase in phrases:
+            if include_boundaries and not phrase.startswith('<START>'):
+                phrase = f"<START> {phrase} <END>"
             for pw in context_count[direction][phrase]:
                 for w in pw.split(' '):
                     if len(w) > 0:
                         terms.add(w)
-    return SkipgramSimilarity(ngram_length=2, skip_length=2, terms=list(terms),
-                              include_boundaries=include_boundaries)
+    return SkipgramSimilarity(ngram_length=2, skip_length=2, terms=list(terms))
 
 
 def map_word_variants(context_freq: Dict[str, Counter], skip_sim: SkipgramSimilarity,

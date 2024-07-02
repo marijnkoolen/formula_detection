@@ -19,6 +19,7 @@ packages = [{ include = "formula_detection" }]
 
 [tool.poetry.dependencies]
 python = "^3.8,<3.11"
+fuzzy-search = "^1.6.0"
 
 [tool.poetry.dev-dependencies]
 

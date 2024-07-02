@@ -2,7 +2,7 @@ from typing import Dict, Union
 
 from formula_detection.context import map_context_word_variants
 from formula_detection.transitions import compute_transition_probs
-from formula_detection.variants import compute_variant_similarity
+from formula_detection.variation.edit import compute_variant_similarity
 
 
 def is_variant(phrase1: str, phrase2: str, known_variants: Dict[str, str],

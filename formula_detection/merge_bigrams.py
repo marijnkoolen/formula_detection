@@ -1,6 +1,7 @@
-from typing import Dict, Iterable, List, Tuple, Union
-import pickle
 import math
+import pickle
+from typing import Dict, Iterable, List, Tuple, Union
+from functools import reduce
 
 import nltk
 from nltk.collocations import BigramCollocationFinder
@@ -11,6 +12,23 @@ from Levenshtein import distance as levenshtein
 _SMALL = 1e-20
 
 _ln = math.log
+
+
+# Indices to marginals arguments:
+
+NGRAM = 0
+"""Marginals index for the ngram count"""
+
+UNIGRAMS = -2
+"""Marginals index for a tuple of each unigram count"""
+
+TOTAL = -1
+"""Marginals index for the number of words in the data"""
+
+
+def product(s):
+    return reduce(lambda x, y: x * y, s)
+
 
 class BigramMerger:
 
@@ -232,15 +250,27 @@ class IndexedTokens:
         :param bigram: a bigram consisting of to IndexedToken instances
         :type bigram: IndexBigram
         """
+        # print('START MERGING')
+        # print('\ttoken_indexes:', self.token_indexes)
         index1 = bigram.index_token1.index
         index2 = bigram.index_token2.index
+        # print('\tindex1:', index1)
+        # print('\tindex2:', index2)
         token_index1 = self.token_indexes[index1]
         token_index2 = self.token_indexes[index2]
+        # print('\ttoken_index1:', token_index1)
+        # print('\ttoken_index2:', token_index2)
         merged_token_index = tuple(sorted(list(token_index1) + list(token_index2)))
+        # print('\tmerged_token_index:', merged_token_index)
         pre_index = self.token_indexes[:index1]
+        # print('\tpre_index:', pre_index)
         between_index = self.token_indexes[index1+1:index2]
+        # print('\tbetween_index:', between_index)
         post_index = self.token_indexes[index2+1:] if index2 < len(self.token_indexes) - 1 else []
+        # print('\tpost_index:', post_index)
         self.token_indexes = pre_index + [merged_token_index] + between_index + post_index
+        # print('\ttoken_indexes:', self.token_indexes)
+        # print('FINISHED MERGING')
 
     def apply_merge_set(self, bigram_variant_set: BigramVariantSet, window_size: int = 3,
                         debug: bool = False) -> None:
@@ -295,6 +325,8 @@ def read_bigrams(bigram_file: str) -> Tuple[BigramCollocationFinder, List[str]]:
 
 class BigramFinder:
 
+    _n = 0
+
     def __init__(self, ufd1, ufd2, bfd, window_size: int = 2):
         self.ufd1 = ufd1
         self.ufd2 = ufd2
@@ -322,6 +354,15 @@ class BigramFinder:
         # For each contingency table cell
         for i in range(4):
             yield (cont[i] + cont[i ^ 1]) * (cont[i] + cont[i ^ 2]) / n_xx
+
+    @classmethod
+    def pmi(cls, *marginals):
+        """Scores ngrams by pointwise mutual information, as in Manning and
+        Schutze 5.4.
+        """
+        return math.log2(marginals[NGRAM] * marginals[TOTAL] ** (cls._n - 1)) - math.log2(
+            product(marginals[UNIGRAMS])
+        )
 
     @classmethod
     def _likelihood_ratio(cls, *marginals):
@@ -392,14 +433,15 @@ def make_bigram_collocation_finder(texts: Iterable, bigram_variant_sets: List[Bi
     :return: an NLTK BigramCollocationFinder
     :rtype: BigramCollocationFinder
     """
-    ufd = nltk.FreqDist()
+    # ufd = nltk.FreqDist()
     ufd1 = nltk.FreqDist()
     ufd2 = nltk.FreqDist()
     bfd = nltk.FreqDist()
 
     for pi, text in enumerate(texts):
         indexed_tokens = IndexedTokens(text['words'])
-        indexed_tokens.apply_merge_sets(bigram_variant_sets)
+        if bigram_variant_sets:
+            indexed_tokens.apply_merge_sets(bigram_variant_sets)
         # unigram count of tokens
         # ufd.update([indexed_token.token_string for indexed_token in indexed_tokens])
         for bigram in indexed_tokens.get_bigrams(window_size=window_size):
