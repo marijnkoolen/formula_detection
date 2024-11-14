@@ -51,11 +51,11 @@ class TestPatternInDoc(TestCase):
     def setUp(self) -> None:
         self.text = 'This is a sentence'
         self.tokenizer = Tokenizer()
-        self.doc = self.tokenizer.tokenize(self.text)
+        self.doc = self.tokenizer.tokenize_doc(self.text)
 
     def test_tokens_match_pattern_return_true_when_match(self):
         text = 'There is a repetition is a repetition'
-        doc = self.tokenizer.tokenize(text)
+        doc = self.tokenizer.tokenize_doc(text)
         pattern = Pattern(['is', 'a', 'repetition'])
         tokens = doc.tokens[1:4]
         self.assertEqual(True, tokens_match_pattern(tokens, pattern))
@@ -76,7 +76,7 @@ class TestPatternInDoc(TestCase):
 
     def test_find_pattern_in_doc_returns_multiple_matches(self):
         text = 'There is a repetition is a repetition'
-        doc = self.tokenizer.tokenize(text)
+        doc = self.tokenizer.tokenize_doc(text)
         pattern = Pattern(['is', 'a', 'repetition'])
         matches = find_pattern_in_doc(doc, pattern)
         self.assertEqual(2, len(matches))

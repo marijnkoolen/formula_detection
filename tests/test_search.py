@@ -9,9 +9,9 @@ class TestNgrams(TestCase):
     def setUp(self) -> None:
         self.tokenizer = Tokenizer(ignorecase=True)
         sent = 'this is a sentence'
-        self.doc = self.tokenizer.tokenize(sent)
+        self.doc = self.tokenizer.tokenize_doc(sent)
         boring_sent = 'this is a bit of a repetitive a sentence with a bit of a repetitive message'
-        self.boring_doc = self.tokenizer.tokenize(boring_sent)
+        self.boring_doc = self.tokenizer.tokenize_doc(boring_sent)
 
     def test_cannot_make_empty_formula_searcher(self):
         error = None
