@@ -61,6 +61,10 @@ class Vocabulary:
         """
         return len(self.term_id)
 
+    def __contains__(self, item: Union[str, Token]):
+        term = item.n if isinstance(item, Token) else item
+        return term in self.term_id
+
     def reset_index(self):
         """
         Resets the vocabulary index, clearing all terms and their corresponding IDs.
@@ -78,7 +82,9 @@ class Vocabulary:
         Returns:
             int: The ID of the term.
         """
+        # print(f"_add_term received: {term} (type: {type(term)})")
         term = token_to_string(term)
+        # print(f"    cast to term: {term} (type: {type(term)})")
         if term in self.term_id:
             return self.term_id[term]
         else:
@@ -131,7 +137,12 @@ class Vocabulary:
         Returns:
             int: The ID of the term, or None if the term is not found.
         """
+        # print(f"term2id received: {term} (type: {type(term)})")
         term = token_to_string(term)
+        # print(f"    term_id num terms: {len(self.term_id)}")
+        # print(f"    cast to term: {term} (type: {type(term)})")
+        # print(f"    self.term_id.get(term, None): {self.term_id.get(term, None)}")
+        # print(f"    term in self.term_id: {term in self.term_id}")
         return self.term_id.get(term, None)
 
     def id2term(self, term_id: int) -> str:

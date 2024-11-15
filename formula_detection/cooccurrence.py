@@ -193,8 +193,8 @@ def make_cooc_freq(doc_iterator: Iterable, vocab: Vocabulary, skip_size: int = 0
         seq_ids = [vocab.term2id(t) for t in doc]
         cooc_freq.update(get_skip_coocs(seq_ids, skip_size=skip_size))
         if report and (si + 1) % report_per == 0:
-            cooc_string = f'num_coocs: {sum(cooc_freq.values())}\tnum distinct coocs: {len(cooc_freq)}'
-            print(f'docs: {si + 1}\tnum_words: {num_words}\t{cooc_string}')
-    cooc_string = f'num_coocs: {sum(cooc_freq.values())}\tnum distinct coocs: {len(cooc_freq)}'
-    print(f'docs: {si + 1}\tnum_words: {num_words}\t{cooc_string}')
+            cooc_string = f'num_coocs: {sum(cooc_freq.values()):,}\tnum distinct coocs: {len(cooc_freq):,}'
+            print(f'docs: {si + 1}\tnum_words: {num_words:,}\t{cooc_string}')
+    cooc_string = f'num_coocs: {sum(cooc_freq.values()):,}\tnum distinct coocs: {len(cooc_freq):,}'
+    print(f'docs: {si + 1:,}\tnum_words: {num_words:,}\t{cooc_string}')
     return cooc_freq

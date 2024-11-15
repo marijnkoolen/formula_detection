@@ -129,6 +129,26 @@ class FormulaSearch:
         else:
             print('WARNING: No value passed for min_cooc_freq, skipping co-occurrence calculations.')
 
+    def term2id(self, term: Union[str, Token]):
+        """Map a term to its identifier in the vocabulary (or None if it's not in there).
+
+        :param term: The term to map to its identifier in the vocabulary.
+        :type term: Union[str, Token]
+        :return: The identifier of the given term
+        :rtype: int
+        """
+        return self.full_vocab.term2id(term)
+
+    def id2term(self, term_id: int):
+        """Map an identifier to its term in the vocabulary (or None if it's not in there).
+
+        :param term: The identifier of a vocabuluary term
+        :type term: int
+        :return: The term of a given identifier.
+        :rtype: Union[str, Token]
+        """
+        return self.full_vocab.id2term(term_id)
+
     def tf(self, term: Union[str, Token]) -> int:
         """
         Returns the frequency of a term in the corpus.
@@ -154,16 +174,19 @@ class FormulaSearch:
         di = 0
         for di, doc in enumerate(self.doc_iterator):
             term_ids = [self.full_vocab.index_term(token) for token in doc]
+            # print(f"doc: {doc}")
+            # print(f"term_ids: {term_ids}")
             if self.report is True and self.report_per:
                 if (di + 1) % self.report_per == 0:
-                    print(f"{di + 1} docs processed\tvocab size: {len(self.full_vocab.term_id)}"
+                    print(f"{di + 1} docs processed\tvocab size: {len(self.full_vocab)}"
                           f"\tterms: {len(self.term_freq)}")
             self.term_freq.update(term_ids)
         if self.report is True and self.report_per:
-            print(f"{di + 1} docs processed\tvocab size: {len(self.full_vocab.term_id)}"
+            print(f"{di + 1} docs processed\tvocab size: {len(self.full_vocab)}"
                   f"\tterms: {len(self.term_freq)}")
 
-    def calculate_co_occurrence_frequencies(self):
+    def calculate_co_occurrence_frequencies(self, skip_size: int = None, report: bool = None,
+                                            report_per: int = None):
         """
         Iterates over the documents in the corpus to calculate co-occurrence frequencies.
 
@@ -172,10 +195,16 @@ class FormulaSearch:
         the co-occurrence index.
         """
         print('2. Iterating over sentences to calculate the co-occurrence frequencies')
+        if skip_size is None:
+            skip_size = self.skip_size
+        if report is None:
+            report = self.report
+        if report_per is None:
+            report_per = self.report_per
         self.cooc_freq = make_cooc_freq(self.doc_iterator, self.min_freq_vocab,
-                                        skip_size=self.skip_size, report=self.report,
-                                        report_per=self.report_per)
-        print(f'    co-occurrence index size: {len(self.cooc_freq)}')
+                                        skip_size=skip_size, report=report,
+                                        report_per=report_per)
+        print(f'    co-occurrence index size: {len(self.cooc_freq):,}')
 
     def make_min_freq_vocabulary(self, min_term_freq: int = None) -> None:
         """
@@ -190,15 +219,16 @@ class FormulaSearch:
         """
         if min_term_freq is None:
             min_term_freq = self.min_term_freq
-        print('    full collection size (tokens):', sum(self.term_freq.values()))
-        print('    full lexicon size (types):', len(self.term_freq))
-        print('    minimum term frequency:', min_term_freq)
+        # f'{value:,}'
+        print(f'    full collection size (tokens): {sum(self.term_freq.values()):,}')
+        print(f'    full lexicon size (types): {len(self.term_freq):,}')
+        print(f'    minimum term frequency: {min_term_freq:,}')
         min_freq_term_ids = [term_id for term_id in self.term_freq if self.term_freq[term_id] >= min_term_freq]
         self.min_freq_vocab = make_selected_vocab(self.full_vocab, selected_ids=min_freq_term_ids)
-        print('    minimum frequency lexicon size:', len(self.min_freq_vocab))
+        print(f'    minimum frequency lexicon size: {len(self.min_freq_vocab):,}')
         self.coll_size = sum(self.term_freq.values())
 
-    def _get_selected_terms(self, doc: Doc,
+    def _get_selected_terms(self, doc: Union[Doc, List[str], List[Token]],
                             min_cooc_freq: int = None,
                             min_neighbour_cooc: int = None) -> List[Union[str, None]]:
         """
@@ -207,8 +237,9 @@ class FormulaSearch:
         This method filters out terms that don't meet the co-occurrence frequency
         thresholds or the required number of neighboring co-occurrences.
 
-        :param doc: The document whose terms are to be filtered. The document should have a `normalized` attribute.
-        :type doc: Doc
+        :param doc: The document whose terms are to be filtered. Document can be a list of string,
+            fuzzy-search `Token` objects or a fuzzy-search `Doc`.
+        :type doc: Union[Doc, List[str], List[Token]]
         :param min_cooc_freq: The minimum frequency of co-occurrences required for a term to be considered.
         :type min_cooc_freq: int or None
         :param min_neighbour_cooc: The minimum number of neighboring co-occurrences required for a term to be kept.
@@ -216,8 +247,15 @@ class FormulaSearch:
         :return: A list of terms that meet the co-occurrence and neighbor criteria, with `None` for terms that do not.
         :rtype: List[Union[str, None]]
         """
+        # print(f"_get_selected_terms received - ")
+        # print("    token types:", [type(t) for t in doc])
+        # print("    token terms:", [t for t in doc])
         seq_ids = [self.min_freq_vocab.term2id(t) for t in doc]
-        seq = [t if t in self.min_freq_vocab.term_id else None for t in doc.normalized]
+        if isinstance(doc, Doc):
+            doc = [t for t in doc.normalized]
+        seq = [t if t in self.min_freq_vocab else None for t in doc]
+        # print(f"seq_ids: {seq_ids}")
+        # print(f"seq: {seq}")
         selected = []
         for ti, term1 in enumerate(seq):
             id1 = seq_ids[ti]
@@ -241,6 +279,7 @@ class FormulaSearch:
                         continue
                 terms.append(term2)
             selected.append(term1 if len(terms) >= min_neighbour_cooc else None)
+        # print(f"selected: {selected}")
         return selected
 
     def _iter_get_doc_and_selected_terms(self, min_cooc_freq: int = None,
@@ -274,14 +313,12 @@ class FormulaSearch:
         print('Minimum co-occurrence frequency:', min_cooc_freq)
         for si, doc in enumerate(self.doc_iterator):
             if (si + 1) % 100000 == 0:
-                print(si + 1, 'sentences processed')
+                if self.report:
+                    print(si + 1, 'sentences processed')
             if max_docs is not None and si >= max_docs:
                 break
-            if isinstance(doc, dict) and 'doc_id' not in doc:
-                doc['doc_id'] = si
-                doc['doc_id_type'] = 'doc_num'
-            elif isinstance(doc, list):
-                doc = {'doc_id': si, 'doc_id_type': 'doc_num', 'words': doc}
+            # if isinstance(doc, list):
+            #     doc = Doc(text=None, doc_id=f"doc_{si+1}", tokens=doc)
             yield {
                 'doc': doc,
                 'selected': self._get_selected_terms(doc, min_cooc_freq=min_cooc_freq,
@@ -311,9 +348,9 @@ class FormulaSearch:
         else:
             return type_extract_func[phrase_type]
 
-    def extract_phrases_from_docs(self, phrase_type: str, min_cooc_freq: int = None,
-                                  min_neighbour_cooc: int = 1, max_docs: int = None,
-                                  *args, **kwargs) -> Generator[CandidatePhraseMatch, None, None]:
+    def extract_phrases(self, phrase_type: str, min_cooc_freq: int = None,
+                        min_neighbour_cooc: int = 1, max_docs: int = None,
+                        *args, **kwargs) -> Generator[CandidatePhraseMatch, None, None]:
         """
         Extracts candidate phrases of a specified type from a document corpus.
 
@@ -344,6 +381,12 @@ class FormulaSearch:
                                                        selected=doc_selected['selected'],
                                                        *args, **kwargs):
                 yield candidate_phrase_match
+
+    def extract_phrases_from_docs(self, *args, **kwargs):
+        """Left for Backward-compatibility."""
+        print("WARNING - 'extract_phrases_from_docs' has been renamed to 'extract_phrases."
+              " The old function name maps to 'extract_phrases' for backward compatibility.")
+        return self.extract_phrases(*args, **kwargs)
 
     def _extract_sub_phrases_from_selected(self, doc: Doc, selected: List[Union[str, None]],
                                            min_phrase_length: int = 3,
@@ -428,7 +471,10 @@ class FormulaSearch:
             for si, sub_phrase in enumerate(sub_phrases):
                 sub_start = word_start + si
                 sub_phrase = make_candidate_phrase(sub_phrase)
-                variable_match = doc.normalized[sub_start: sub_start + len(phrase)]
+                if isinstance(doc, Doc):
+                    variable_match = doc.normalized[sub_start: sub_start + len(phrase)]
+                else:
+                    variable_match = doc[sub_start: sub_start + len(phrase)]
                 yield CandidatePhraseMatch(sub_phrase, word_start=sub_start,
                                            variable_match=variable_match, doc=doc)
         else:
@@ -527,7 +573,10 @@ class FormulaSearch:
                 min_term_frac = min([self.term_freq[t] / self.coll_size for t in phrase if t is not None])
                 if min_term_frac < self.max_min_term_frac:
                     candidate_phrase = make_candidate_phrase(phrase)
-                    variable_match = doc.normalized[phrase_start: phrase_start+len(phrase)]
+                    if isinstance(doc, Doc):
+                        variable_match = doc.normalized[phrase_start: phrase_start+len(phrase)]
+                    else:
+                        variable_match = doc[phrase_start: phrase_start+len(phrase)]
                     yield CandidatePhraseMatch(candidate_phrase, word_start=phrase_start,
                                                variable_match=variable_match)
 
@@ -604,9 +653,10 @@ class FormulaSearch:
             if (di+1) >= max_docs:
                 break
             selected = self._get_selected_terms(doc, min_cooc_freq=min_cooc_freq)
-            for candidate_phrase_match in extract_func(doc=doc,
-                                                       selected=selected,
-                                                       *args, **kwargs):
-                if candidate_phrase_match.candidate_phrase.phrase_string in candidate_set:
-                    variable_match = doc.normalized[candidate_phrase_match.word_start: candidate_phrase_match.word_end]
-                    yield variable_match, candidate_phrase_match
+            for candidate_pm in extract_func(doc=doc, selected=selected, *args, **kwargs):
+                if candidate_pm.candidate_phrase.phrase_string in candidate_set:
+                    if isinstance(doc, Doc):
+                        variable_match = doc.normalized[candidate_pm.word_start: candidate_pm.word_end]
+                    else:
+                        variable_match = doc[candidate_pm.word_start: candidate_pm.word_end]
+                    yield variable_match, candidate_pm

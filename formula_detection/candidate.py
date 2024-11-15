@@ -1,6 +1,8 @@
 from typing import List, Union
 
 from fuzzy_search.tokenization.token import Doc
+from fuzzy_search.tokenization.token import Token
+from fuzzy_search.tokenization.token import tokens2string
 
 
 def transform_candidate_to_list(candidate: Union[str, List[str]]) -> List[str]:
@@ -28,15 +30,15 @@ def transform_candidate_to_list(candidate: Union[str, List[str]]) -> List[str]:
         return candidate
 
 
-def transform_candidate_to_string(candidate: Union[str, List[str]]) -> str:
+def transform_candidate_to_string(candidate: Union[str, List[str], List[Token]]) -> str:
     """
-    Converts a candidate (either a string or a list of strings) into a single string.
+    Converts a candidate (either a string or a list of strings or Tokens) into a single string.
     If the input is a list of strings, it joins them with spaces; if it's already a string,
     it returns the string as is.
 
     Args:
-        candidate (Union[str, List[str]]): The candidate input, which can be either a string
-                                            or a list of strings.
+        candidate (Union[str, List[str], List[Token]): The candidate input, which can be
+                                                       either a string or a list of strings.
 
     Returns:
         str: A string, either joined from the input list of strings or returned directly
@@ -46,17 +48,18 @@ def transform_candidate_to_string(candidate: Union[str, List[str]]) -> str:
         TypeError: If the input is neither a string nor a list of strings.
     """
     if isinstance(candidate, list):
-        return ' '.join(candidate)
+        return ' '.join([t.n if isinstance(t, Token) else t for t in candidate])
     elif isinstance(candidate, str) is False:
         raise TypeError(f'candidate must be str or list of str, not {type(candidate)}')
     else:
         return candidate
 
 
-def transform_candidates_to_lists(candidates: List[Union[str, List[str]]]) -> List[List[str]]:
+def transform_candidates_to_lists(candidates: List[Union[str, List[str], List[Token]]]) -> List[List[str]]:
     """
-    Converts a list of candidates (each of which can be a string or a list of strings)
-    into a list of lists of strings. Each candidate is processed using `transform_candidate_to_list`.
+    Converts a list of candidates (each of which can be a string or a list of strings or Token
+    instances) into a list of lists of strings. Each candidate is processed using
+    `transform_candidate_to_list`.
 
     Args:
         candidates (List[Union[str, List[str]]]): A list of candidates, where each candidate
@@ -69,10 +72,11 @@ def transform_candidates_to_lists(candidates: List[Union[str, List[str]]]) -> Li
     return [transform_candidate_to_list(candidate) for candidate in candidates]
 
 
-def transform_candidates_to_strings(candidates: List[Union[str, List[str]]]) -> List[str]:
+def transform_candidates_to_strings(candidates: List[Union[str, List[str], List[Token]]]) -> List[str]:
     """
-    Converts a list of candidates (each of which can be a string or a list of strings)
-    into a list of strings. Each candidate is processed using `transform_candidate_to_string`.
+    Converts a list of candidates (each of which can be a string or a list of strings or a Token
+    instances) into a list of strings. Each candidate is processed using
+    `transform_candidate_to_string`.
 
     Args:
         candidates (List[Union[str, List[str]]]): A list of candidates, where each candidate
@@ -93,7 +97,7 @@ class CandidatePhrase:
         phrase_list (List[str]): The list representation of the candidate phrase.
     """
 
-    def __init__(self, phrase: Union[str, List[str]]):
+    def __init__(self, phrase: Union[str, List[str], List[Token]]):
         """
         Initializes a CandidatePhrase object by transforming the input phrase into both
         string and list representations.
@@ -159,7 +163,7 @@ class CandidatePhraseMatch:
 
     def __init__(self, candidate_phrase: CandidatePhrase, char_start: int = None,
                  word_start: int = None, variable_match: List[str] = None,
-                 doc: Doc = None):
+                 doc: Union[Doc, List[str], List[Token]] = None):
         """
         Initializes a CandidatePhraseMatch object with the given candidate phrase and match details.
 
@@ -171,13 +175,14 @@ class CandidatePhraseMatch:
             doc (Doc, optional): The document in which the match occurred. Defaults to None.
         """
         self.candidate_phrase = candidate_phrase
+        self.phrase = candidate_phrase.phrase_string
         self.char_start = None if char_start is None else char_start
-        self.char_end = None if char_start is None else char_start + len(candidate_phrase.phrase_string)
+        self.char_end = None if char_start is None else char_start + len(self.phrase)
         self.word_start = None if word_start is None else word_start
         self.word_end = None if word_start is None else word_start + len(candidate_phrase.phrase_list)
         self.variable_match = None if variable_match is None else variable_match
         self.variable_terms = []
-        self.doc_id = doc.id if doc is not None else None
+        self.doc_id = doc.id if isinstance(doc, Doc) else None
         if self.variable_match:
             self.variable_terms = get_variable_terms_from_match(candidate_phrase, variable_match)
 
@@ -188,7 +193,7 @@ class CandidatePhraseMatch:
         Returns:
             int: The length of the matched phrase.
         """
-        return len(self.candidate_phrase.phrase_string)
+        return len(self.phrase)
 
     def __repr__(self) -> str:
         """
@@ -198,7 +203,7 @@ class CandidatePhraseMatch:
             str: A string representation of the candidate phrase match.
         """
         return f'({self.__class__.__name__}, char_start={self.char_start}, ' \
-               f'word_start={self.word_start}, phrase={self.candidate_phrase.phrase_string})'
+               f'word_start={self.word_start}, phrase={self.phrase})'
 
 
 def make_candidate_phrase(phrase: Union[str, List[Union[str, None]]]) -> CandidatePhrase:
@@ -213,13 +218,15 @@ def make_candidate_phrase(phrase: Union[str, List[Union[str, None]]]) -> Candida
     Returns:
         CandidatePhrase: A new CandidatePhrase object representing the input phrase.
     """
+    # make sure the phrase is in list representation
     phrase = transform_candidate_to_list(phrase)
-    phrase = ' '.join([t if t is not None else '<VAR>' for t in phrase])
+    # transform to string, replace None elements by '<VAR>'
+    phrase = transform_candidate_to_string([t.n if t is not None else '<VAR>' for t in phrase])
     return CandidatePhrase(phrase)
 
 
 def make_candidate_phrase_match(phrase: Union[str, List[Union[str, None]]],
-                                phrase_start, doc: Doc) -> CandidatePhraseMatch:
+                                phrase_start: int, doc: Doc) -> CandidatePhraseMatch:
     """
     Creates a CandidatePhraseMatch object by matching a candidate phrase in a document.
 
