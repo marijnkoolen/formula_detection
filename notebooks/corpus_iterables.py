@@ -1,13 +1,119 @@
-from typing import Dict, List, Generator, Union
 import csv
 import gzip
 import re
 import glob
 import json
 import zipfile
+from typing import Callable, Dict, List, Generator, Union
 
 from nltk.tokenize import sent_tokenize
 from bs4 import BeautifulSoup
+from fuzzy_search.tokenization.token import Tokenizer, CustomTokenizer
+from fuzzy_search.tokenization.token import Doc
+
+
+def read_text_csv(text_file: str, sep: str = '\t',
+                  file_has_header: bool = True, headers: List[str] = None,
+                  skip_invalid_lines: bool = False,
+                  debug: int = 0):
+    """Generic paragraph reader that can read from CSV/TSV files.
+
+    :param text_file: the filename of an input text file.
+    :param sep: the field separator str (default is '\t').
+    :param file_has_header: Boolean flag to indicate whether the input file starts.
+    :param headers: an optional list of headers to use. Even if there is a header line in the
+    input file, you can use this parameter to override the headers.
+    :param skip_invalid_lines: ignore lines with a different number of columns than
+    the number of headers
+    :param debug: print basic debug information.
+    """
+    opener = gzip.open if text_file.endswith('.gz') else open
+    if debug > 0:
+        print('parsing file', text_file)
+    with opener(text_file, 'rt') as fh:
+        if file_has_header is True:
+            header_line = next(fh)
+            if headers is None:
+                headers = header_line.strip('\n').split(sep)
+        elif file_has_header is False and headers is None:
+            raise ValueError("If you set 'file_has_header' to False, you must pass headers.")
+        for li, line in enumerate(fh):
+            line_idx = li + 2 if file_has_header else li + 1
+            if len(headers) > 1:
+                row = line.strip('\n').split(sep)
+            else:
+                row = [line.strip('\n')]
+            if len(row) != len(headers):
+                if skip_invalid_lines is True:
+                    continue
+                else:
+                    raise IndexError(f"Error in line {line_idx}: number of columns {len(row)} "
+                                     f"differs from the number of headers {len(headers)}.")
+            else:
+                yield {header: row[hi] for hi, header in enumerate(headers)}
+
+
+def make_reader(sep: str = '\t',
+                file_has_header: bool = True, headers: List[str] = None,
+                skip_invalid_lines: bool = False, debug: int = 0):
+    """Closure to generate a reader function that takes a list of text files as input
+    and returns lists of tokens per text."""
+
+    def reader(text_file: str):
+        return read_text_csv(text_file, sep=sep, file_has_header=file_has_header,
+                             headers=headers, skip_invalid_lines=skip_invalid_lines,
+                             debug=debug)
+    return reader
+
+
+class CorpusIterable:
+
+    def __init__(self, text_files: List[str], tokenize_func: Callable = None,
+                 text_field: str = None, doc_id_field: str = None, sep: str = '\t',
+                 file_has_header: bool = True, headers: List[str] = None,
+                 skip_invalid_lines: bool = False, debug: int = 0):
+        """Instantiation of a CorpusIterable.
+
+        :param text_files: a list of filenames of input text files.
+        :param tokenize_func: a text tokenizer function that takes a text string as input
+        and returns a list of tokens. Defaults to the tokenize function of the FuzzySearch Tokenizer.
+        :param text_field: the name of the field/column that contains the text
+        :param doc_id_field: the name of the field/column that contains the document identifier
+        :param sep: the field separator str (default is '\t').
+        :param file_has_header: Boolean flag to indicate whether the input file starts.
+        :param headers: an optional list of headers to use. Even if there is a header line in the
+        input file, you can use this parameter to override the headers.
+        :param skip_invalid_lines: ignore lines with a different number of columns than
+        the number of headers
+        :param debug: print basic debug information.
+        """
+        self.text_files = text_files
+        if tokenize_func:
+            self.tokenizer = CustomTokenizer(tokenize_func)
+        else:
+            # load a default tokenizer if non is passed
+            self.tokenizer = Tokenizer()
+        self.text_field = text_field
+        self.doc_id_field = doc_id_field
+        self.sep = sep
+        self.file_has_header = file_has_header
+        self.headers = headers
+        self.skip_invalid_lines = skip_invalid_lines
+        self.debug = debug
+        self.reader = make_reader(sep=sep, file_has_header=file_has_header, headers=headers,
+                                  skip_invalid_lines=skip_invalid_lines)
+
+    def __iter__(self):
+        for text_file in self.text_files:
+            for di, doc_dict in enumerate(self.reader(text_file)):
+                file_line_idx = di + 2 if self.file_has_header else di + 1
+                if self.doc_id_field:
+                    doc_id = doc_dict[self.doc_id_field]
+                else:
+                    doc_id = f"{text_file}:{file_line_idx}"
+                tokenized_doc = self.tokenizer.tokenize_doc(doc_dict[self.text_field],
+                                                            doc_id=doc_id)
+                yield tokenized_doc
 
 
 def read_reviews(review_file):
@@ -36,7 +142,7 @@ def read_charter_files(charter_zipfile):
 def extract_charter_text(charter):
     soup = BeautifulSoup(charter, 'lxml')
     transcript = BeautifulSoup(soup.find('transcriptie').text, 'lxml')
-    text = '\n'.join([re.sub(r'\{.*?\}', '', p.text) for p in transcript.find_all('p')])
+    text = '\n'.join([re.sub(r'{.*?}', '', p.text) for p in transcript.find_all('p')])
     return text
 
 
@@ -77,6 +183,50 @@ def read_voc_paras(voc_file, add_boundaries: bool = False):
                     words = ['<PARA_START>'] + words + ['<PARA_END>']
                 yield {'doc_id': doc_id, 'para_id': para_id, 'text': text, 'words': words}
     return None
+
+
+class DocReader:
+
+    def __init__(self, text_files: Union[List[str], str], ignorecase: bool = False,
+                 include_boundaries: bool = False, has_headers: bool = False,
+                 use_headers: List[str] = None, remove_punctuation: bool = False,
+                 tokenizer: Tokenizer = None,
+                 id_field: str = None, text_field: str = None):
+        self.text_files = text_files if isinstance(text_files, list) else [text_files]
+        self.ignorecase = ignorecase
+        self.remove_punctuation = remove_punctuation
+        self.include_boundaries = include_boundaries
+        self.has_headers = has_headers
+        self.id_field = id_field if id_field else 'doc_id'
+        self.text_field = text_field if text_field else 'text'
+        self.use_headers = use_headers
+        if not tokenizer:
+            self.tokenizer = Tokenizer(ignorecase=ignorecase, include_boundary_tokens=include_boundaries,
+                                       remove_punctuation=remove_punctuation)
+        else:
+            self.tokenizer = tokenizer
+
+    def __iter__(self):
+        for text_file in self.text_files:
+            with open(text_file, 'rt') as fh:
+                if self.has_headers:
+                    headers = next(fh).split()
+                elif self.use_headers:
+                    headers = self.use_headers
+                else:
+                    headers = ['doc_id', 'text']
+                for line in fh:
+                    values = line.strip('\n').split('\t')
+                    # print(len(values))
+                    doc = {header: values[hi] for hi, header in enumerate(headers)}
+                    metadata = {header: doc[header] for header in headers
+                                if header != self.text_field and header != self.id_field}
+                    if self.ignorecase:
+                        doc[self.text_field] = doc[self.text_field].lower()
+                    doc = self.tokenizer.tokenize(doc[self.text_field], doc_id=doc[self.id_field])
+                    doc.metadata = metadata
+                    yield doc
+        return None
 
 
 class GoldenAgentsSentences:
@@ -259,7 +409,7 @@ def get_novel_sents():
 
 
 def get_review_sents():
-    review_file = '/Users/marijnkoolen/Code/impact-of-fiction/data/reviews/review-stats.csv.gz'
+    review_file = '/Users/marijnkoolen/Code/impact-of-fiction/data/reviews/stats/review-stats-old.csv.gz'
     return ReviewSentences(review_file)
 
 

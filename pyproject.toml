@@ -21,7 +21,7 @@ packages = [{ include = "formula_detection" }]
 python = "^3.8,<3.13"
 fuzzy-search = "^1.6.0"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 
 [tool.poetry.urls]
 "Bug Tracker" = "https://github.com/marijnkoolen/formula_detection/issues"
