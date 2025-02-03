@@ -60,6 +60,6 @@ class TestNgrams(TestCase):
     def test_formula_searcher_can_extract_phrases(self):
         formula_search = FormulaSearch(doc_iterator=[self.boring_doc], min_term_freq=2)
         formula_search.calculate_co_occurrence_frequencies()
-        phrases = [phrase for phrase in formula_search.extract_phrases_from_docs(phrase_type='long_phrases',
-                                                                                 min_cooc_freq=2)]
+        phrases = [phrase for phrase in formula_search.extract_phrases(phrase_type='long_phrases',
+                                                                       min_cooc_freq=2)]
         self.assertEqual(len(phrases), 2)

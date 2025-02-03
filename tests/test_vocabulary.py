@@ -54,6 +54,14 @@ class TestVocabulary(TestCase):
         term_freq = calculate_term_freq([self.sent], vocab)
         self.assertEqual(len(term_freq), len(vocab))
 
+    def test_vocabulary_can_check_in_vocab_from_token_instance(self):
+        tokenizer = Tokenizer(ignorecase=True)
+        doc = tokenizer.tokenize('this is a sentence')
+        vocab = Vocabulary(terms=doc)
+        for ti, token in enumerate(doc):
+            with self.subTest(ti):
+                self.assertTrue(token in vocab)
+
 
 class TestVocabularyDoc(TestCase):
 

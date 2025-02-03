@@ -5,9 +5,9 @@ from fuzzy_search.tokenization.token import Token
 from fuzzy_search.tokenization.token import tokens2string
 
 
-def transform_candidate_to_list(candidate: Union[str, List[str]]) -> List[str]:
+def transform_candidate_to_list(candidate: Union[str, List[Union[str, Token]]]) -> List[str]:
     """
-    Converts a candidate (either a string or a list of strings) into a list of strings.
+    Converts a candidate (either a string or a list of strings or Tokens) into a list of strings.
     If the input is a string, it splits it by spaces; if it's already a list of strings,
     it returns the list as is.
 
@@ -24,6 +24,8 @@ def transform_candidate_to_list(candidate: Union[str, List[str]]) -> List[str]:
     """
     if isinstance(candidate, str):
         return candidate.split(' ')
+    elif all(isinstance(token, Token) for token in candidate):
+        return [token.n for token in candidate]
     elif isinstance(candidate, list) is False:
         raise TypeError(f'candidate must be str or list of str, not {type(candidate)}')
     else:
@@ -48,7 +50,15 @@ def transform_candidate_to_string(candidate: Union[str, List[str], List[Token]])
         TypeError: If the input is neither a string nor a list of strings.
     """
     if isinstance(candidate, list):
-        return ' '.join([t.n if isinstance(t, Token) else t for t in candidate])
+        if all(isinstance(t, Token) for t in candidate):
+            string = ''
+            for token in candidate:
+                if token.char_index > len(string):
+                    string += ' ' * (token.char_index - len(string))
+                string += token.t
+            return string
+        else:
+            return ' '.join(candidate)
     elif isinstance(candidate, str) is False:
         raise TypeError(f'candidate must be str or list of str, not {type(candidate)}')
     else:
@@ -206,22 +216,21 @@ class CandidatePhraseMatch:
                f'word_start={self.word_start}, phrase={self.phrase})'
 
 
-def make_candidate_phrase(phrase: Union[str, List[Union[str, None]]]) -> CandidatePhrase:
+def make_candidate_phrase(phrase: Union[str, List[Union[str, Token, None]]]) -> CandidatePhrase:
     """
     Creates a CandidatePhrase object from a given phrase, which can be a string or a
     list of strings and None elements.
 
     Args:
-        phrase (Union[str, List[Union[str, None]]]): The phrase to convert into a
+        phrase (Union[str, List[Union[str, Token, None]]]): The phrase to convert into a
         CandidatePhrase object. None elements are converted to <VAR> tokens.
 
     Returns:
         CandidatePhrase: A new CandidatePhrase object representing the input phrase.
     """
-    # make sure the phrase is in list representation
-    phrase = transform_candidate_to_list(phrase)
     # transform to string, replace None elements by '<VAR>'
-    phrase = transform_candidate_to_string([t.n if t is not None else '<VAR>' for t in phrase])
+    if isinstance(phrase, list):
+        phrase = transform_candidate_to_string([t if isinstance(t, str) else '<VAR>' for t in phrase])
     return CandidatePhrase(phrase)
 
 
