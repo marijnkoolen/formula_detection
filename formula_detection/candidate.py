@@ -235,20 +235,23 @@ def make_candidate_phrase(phrase: Union[str, List[Union[str, Token, None]]]) -> 
 
 
 def make_candidate_phrase_match(phrase: Union[str, List[Union[str, None]]],
-                                phrase_start: int, doc: Doc) -> CandidatePhraseMatch:
+                                phrase_start: int,
+                                doc: Union[Doc, List[str], List[Token]]) -> CandidatePhraseMatch:
     """
     Creates a CandidatePhraseMatch object by matching a candidate phrase in a document.
 
     Args:
         phrase (Union[str, List[Union[str, None]]]): The candidate phrase to match.
         phrase_start (int): The starting index of the phrase in the document.
-        doc (Doc): The document where the phrase is being matched.
+        doc (Union[Doc, List[str], List[Token]]): The document where the phrase is being
+            matched. Can be a fuzzy-search Doc, or a plain list of strings or Tokens.
 
     Returns:
         CandidatePhraseMatch: A new CandidatePhraseMatch object representing the match
             of the phrase in the document.
     """
     candidate_phrase = make_candidate_phrase(phrase)
-    variable_match = doc.normalized[phrase_start: phrase_start + len(phrase)]
+    doc_tokens = doc.normalized if isinstance(doc, Doc) else doc
+    variable_match = doc_tokens[phrase_start: phrase_start + len(phrase)]
     return CandidatePhraseMatch(candidate_phrase, word_start=phrase_start,
                                 variable_match=variable_match, doc=doc)

@@ -1,5 +1,5 @@
 from collections import Counter
-from typing import Iterable, List, Union
+from typing import Callable, Dict, Iterable, List, Optional, Union
 
 from fuzzy_search.tokenization.token import Token
 from fuzzy_search.tokenization.token import Doc
@@ -26,20 +26,33 @@ class Vocabulary:
     A class to manage a vocabulary of terms, with functionality for indexing and mapping terms to IDs.
 
     Attributes:
-        term_id (dict): A dictionary mapping terms (strings) to their corresponding IDs.
-        id_term (dict): A dictionary mapping term IDs to their corresponding terms (strings).
+        term_id (dict): A dictionary mapping canonical terms (strings) to their corresponding IDs.
+        id_term (dict): A dictionary mapping term IDs to their corresponding canonical terms (strings).
+        normaliser (callable or None): Optional function mapping a surface form to its canonical form.
+            When set, all indexing and lookup operations apply it transparently so that surface variants
+            are collapsed to a single ID. Pass None (the default) for no normalisation — this makes
+            the class fully language-agnostic.
+        surface_to_canonical (dict): Records every surface form seen and the canonical form it was
+            mapped to. Populated only when normaliser is set.
     """
 
-    def __init__(self, terms: Union[List[Union[str, Token]], Doc] = None):
+    def __init__(self, terms: Union[List[Union[str, Token]], Doc] = None,
+                 normaliser: Optional[Callable[[str], str]] = None):
         """
         Initializes the Vocabulary object and optionally indexes the given terms.
 
         Args:
             terms (Union[List[Union[str, Token]], Doc], optional): A list of terms (strings or Token objects)
                 or a Doc object containing terms to index. Defaults to None.
+            normaliser (callable, optional): A function that maps a surface token string to its canonical
+                form before indexing or lookup. Defaults to None (no normalisation). Keeping this None
+                makes the vocabulary fully language-agnostic; supply a language-specific function
+                (e.g. normalise_spelling from normalisation.rewrite_historic_dutch) when needed.
         """
-        self.term_id = {}
-        self.id_term = {}
+        self.term_id: Dict[str, int] = {}
+        self.id_term: Dict[int, str] = {}
+        self.normaliser: Optional[Callable[[str], str]] = normaliser
+        self.surface_to_canonical: Dict[str, str] = {}
         if terms is not None:
             self.index_terms(terms)
 
@@ -63,7 +76,8 @@ class Vocabulary:
 
     def __contains__(self, item: Union[str, Token]):
         term = item.n if isinstance(item, Token) else item
-        return term in self.term_id
+        canonical = self.normaliser(term) if self.normaliser else term
+        return canonical in self.term_id
 
     def reset_index(self):
         """
@@ -75,22 +89,25 @@ class Vocabulary:
     def _add_term(self, term: Union[str, Token]) -> int:
         """
         Adds a new term to the vocabulary, or returns the ID of an existing term.
+        If a normaliser is set, the canonical form is stored in term_id/id_term and
+        the surface-to-canonical mapping is recorded in surface_to_canonical.
 
         Args:
             term (Union[str, Token]): The term to add. Can be a string or a Token object.
 
         Returns:
-            int: The ID of the term.
+            int: The ID of the canonical term.
         """
-        # print(f"_add_term received: {term} (type: {type(term)})")
-        term = token_to_string(term)
-        # print(f"    cast to term: {term} (type: {type(term)})")
-        if term in self.term_id:
-            return self.term_id[term]
+        surface = token_to_string(term)
+        canonical = self.normaliser(surface) if self.normaliser else surface
+        if self.normaliser and surface != canonical:
+            self.surface_to_canonical[surface] = canonical
+        if canonical in self.term_id:
+            return self.term_id[canonical]
         else:
             term_id = len(self.term_id)
-            self.term_id[term] = term_id
-            self.id_term[term_id] = term
+            self.term_id[canonical] = term_id
+            self.id_term[term_id] = canonical
             return term_id
 
     def index_term(self, term: Union[str, Token]) -> int:
@@ -129,21 +146,18 @@ class Vocabulary:
 
     def term2id(self, term: Union[str, Token]) -> int:
         """
-        Returns the ID of a term.
+        Returns the ID of a term. Applies the normaliser if one is set, so lookups
+        using surface forms work transparently against a canonicalised vocabulary.
 
         Args:
             term (Union[str, Token]): The term to look up.
 
         Returns:
-            int: The ID of the term, or None if the term is not found.
+            int: The ID of the canonical term, or None if not found.
         """
-        # print(f"term2id received: {term} (type: {type(term)})")
         term = token_to_string(term)
-        # print(f"    term_id num terms: {len(self.term_id)}")
-        # print(f"    cast to term: {term} (type: {type(term)})")
-        # print(f"    self.term_id.get(term, None): {self.term_id.get(term, None)}")
-        # print(f"    term in self.term_id: {term in self.term_id}")
-        return self.term_id.get(term, None)
+        canonical = self.normaliser(term) if self.normaliser else term
+        return self.term_id.get(canonical, None)
 
     def id2term(self, term_id: int) -> str:
         """
@@ -160,7 +174,8 @@ class Vocabulary:
 
 def make_selected_vocab(full_vocab: Vocabulary, selected_terms: List[str] = None,
                         selected_ids: List[int] = None, term_freq: Counter = None,
-                        min_term_freq: int = None) -> Vocabulary:
+                        min_term_freq: int = None,
+                        normaliser: Optional[Callable[[str], str]] = None) -> Vocabulary:
     """
     Creates a new vocabulary containing a subset of terms from the full vocabulary
     based on the provided criteria.
@@ -185,7 +200,9 @@ def make_selected_vocab(full_vocab: Vocabulary, selected_terms: List[str] = None
         ValueError: If neither `selected_terms` nor `selected_ids` are provided.
         TypeError: If `term_freq` is provided without `min_term_freq`.
     """
-    selected_vocab = Vocabulary()
+    if normaliser is None:
+        normaliser = full_vocab.normaliser
+    selected_vocab = Vocabulary(normaliser=normaliser)
     if term_freq is not None:
         if not isinstance(min_term_freq, int):
             raise TypeError('if term_freq is passed, min_term_freq is required and must be an integer')

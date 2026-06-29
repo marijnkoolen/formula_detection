@@ -1,3 +1,21 @@
+"""
+variants.py — Spelling-variant and word-order-variant detection for recurring phrases.
+
+Given the contexts (preceding/following phrases) collected around a set of
+candidate formulas, this module aligns pairs of similar sub-phrases character
+by character (using Levenshtein edit operations), reduces and re-groups the
+resulting edit chunks into token-level changes, and classifies those changes
+(e.g. token split/merge/add/remove/replace, punctuation addition/removal).
+
+It also detects word-order swaps between near-duplicate n-grams (e.g. "and
+ever" vs "ever and") and aligns tokens across many sub-phrase pairs to build
+a frequency-weighted map of which spelling/word-order variant should be
+treated as canonical. The MapVariants class consumes that aligned-token
+frequency information and produces a `is_variant_of` mapping plus its
+inverse `has_variant` mapping, used to rewrite raw context phrases to a
+canonical form so that recurring formulas are not fragmented by minor
+historical spelling variation.
+"""
 import re
 from collections import Counter
 from collections import defaultdict
@@ -14,11 +32,40 @@ from .variation.edit import get_alignment_change
 
 
 def is_aligned_whitespace_chunk(chunk: Dict[str, any]) -> bool:
+    """Check whether an aligned chunk is purely whitespace within an otherwise aligned span.
+
+    Args:
+        chunk: An alignment chunk dict with 'type' and 'source' keys, as
+            produced by get_alignments_changes.
+
+    Returns:
+        True if the chunk's type is 'aligned' and its source text contains
+        a space character, False otherwise.
+    """
     return chunk['type'] == 'aligned' and ' ' in chunk['source']
 
 
 def is_aligned_with_next_token_chunk(group: List[Dict[str, any]],
                                      debug: int = 0) -> bool:
+    """Decide whether the chunk group should be closed off before adding the next token.
+
+    Used while grouping tokenized alignment chunks: a group should end here
+    (and a new group should start with the next chunk) when the group's
+    last chunk is a pure whitespace insertion/deletion and one side of the
+    concatenated group text is empty while the other ends in a deleted or
+    inserted whitespace-trailing token of at least 3 characters, or is one
+    of a small set of short Dutch function words ('de', 'in', 'op', 'om',
+    'te') that are still considered meaningful word boundaries.
+
+    Args:
+        group: The list of alignment chunks accumulated so far for the
+            current group.
+        debug: Verbosity level for debug printing (0 = silent).
+
+    Returns:
+        True if the current group is aligned with (should be split before)
+        the next token, False otherwise.
+    """
     source_string = ''.join([group_chunk['source'] for group_chunk in group])
     dest_string = ''.join([group_chunk['dest'] for group_chunk in group])
     # if chunk['type'] == 'aligned':
@@ -45,6 +92,16 @@ def is_aligned_with_next_token_chunk(group: List[Dict[str, any]],
 
 
 def is_whitespace_change_chunk(chunk: Dict[str, any]) -> bool:
+    """Check whether a chunk represents an insertion or deletion of pure whitespace.
+
+    Args:
+        chunk: An alignment chunk dict with 'source' and 'dest' keys.
+
+    Returns:
+        True if one side of the chunk is empty and the other side is
+        non-empty whitespace (i.e. a whitespace insertion or deletion),
+        False otherwise.
+    """
     if chunk['source'] == '' and chunk['dest'].isspace():
         return True
     if chunk['source'].isspace() and chunk['dest'] == '':
@@ -54,6 +111,27 @@ def is_whitespace_change_chunk(chunk: Dict[str, any]) -> bool:
 
 
 def reduce_changes(aligned_chunks: List[Dict[str, any]], debug: int = 0):
+    """Merge consecutive non-aligned (changed) chunks into single 'replaced' chunks.
+
+    Walks the raw character-level alignment chunks produced by
+    get_alignments_changes and collapses runs of consecutive change
+    operations (insert/delete/replace) that directly follow each other or
+    follow an aligned chunk into a single 'replaced' chunk, so that
+    adjacent edits on the same word/span are treated as one combined
+    change rather than many tiny ones. Whitespace-change chunks are kept
+    as their own (also relabelled 'replaced') chunk rather than merged
+    into the preceding one.
+
+    Args:
+        aligned_chunks: List of alignment chunk dicts (each with 'source',
+            'dest', 'type') as produced by get_alignments_changes.
+        debug: Verbosity level for debug printing (0 = silent).
+
+    Returns:
+        A new list of chunk dicts where consecutive change chunks have
+        been merged into single 'replaced' chunks, interleaved with the
+        original 'aligned' chunks.
+    """
     reduced_chunks = []
     prev_type = 'aligned'
     for ci, curr_chunk in enumerate(aligned_chunks):
@@ -84,6 +162,27 @@ def reduce_changes(aligned_chunks: List[Dict[str, any]], debug: int = 0):
 
 
 def tokenize_aligned_chunks(aligned_chunks: List[Dict[str, any]], debug: int = 0):
+    """Split reduced alignment chunks that span whitespace into per-token chunks.
+
+    For 'aligned' chunks containing whitespace, splits the chunk into
+    separate aligned chunks per whitespace-delimited token (each given
+    'char_diff': 0). For 'replace' chunks where either side contains
+    whitespace, splits on whitespace and distributes the source/dest text
+    across new 'replaced' chunks, attaching the non-whitespace-containing
+    side's untouched text to the first token-aligned sub-chunk it
+    encounters (tracked via `other_used`). All other chunks are passed
+    through unchanged except for an added 'char_diff' field (the
+    difference in length between source and dest).
+
+    Args:
+        aligned_chunks: List of reduced alignment chunk dicts (as produced
+            by reduce_changes).
+        debug: Verbosity level for debug printing (0 = silent).
+
+    Returns:
+        A new list of chunk dicts, each with a 'char_diff' field, where
+        chunks spanning whitespace have been split into per-token chunks.
+    """
     tokenized_chunks = []
     for chunk in aligned_chunks:
         if debug > 0:
@@ -141,6 +240,34 @@ def tokenize_aligned_chunks(aligned_chunks: List[Dict[str, any]], debug: int = 0
 
 
 def combine_tokenized_chunks(chunks: List[Dict[str, any]], debug: int = 0):
+    """Group tokenized alignment chunks into combined chunks and classify each group's change type.
+
+    Iterates the per-token chunks produced by tokenize_aligned_chunks and
+    groups them using is_aligned_whitespace_chunk (which forces a
+    singleton group) and is_aligned_with_next_token_chunk (which forces a
+    group boundary before the next token). For each resulting group, joins
+    the source/dest text, tokenizes both into words, separates punctuation
+    tokens from word tokens, and compares the word-token sequences to
+    classify the change as one of: '' (no real change), 'remove_tokens',
+    'add_tokens', 'split_tokens', 'merge_tokens', or 'replace_tokens',
+    based on how the token counts differ and the magnitude of the largest
+    per-chunk character-length difference (max_replace/min_replace). Each
+    combined chunk is then passed through solve_whitespace_punctuation to
+    fix up surrounding punctuation/whitespace handling.
+
+    Args:
+        chunks: List of tokenized alignment chunk dicts (as produced by
+            tokenize_aligned_chunks).
+        debug: Verbosity level for debug printing (0 = silent; >1 prints
+            extra grouping detail).
+
+    Returns:
+        A list of combined chunk dicts, each with keys 'source', 'dest',
+        'align_type' ('aligned' or 'replaced'), 'change_type' (one of the
+        classifications above, possibly suffixed by
+        solve_whitespace_punctuation), and 'chunks' (the underlying list
+        of per-token chunks in that group).
+    """
     combined_chunks = []
     chunk_groups = []
     group = []
@@ -225,10 +352,40 @@ def combine_tokenized_chunks(chunks: List[Dict[str, any]], debug: int = 0):
 
 
 def classify_changes(chunk_group: List[Dict[str, str]]):
+    """Placeholder for change classification (currently unimplemented; always returns None).
+
+    Args:
+        chunk_group: A list of alignment chunk dicts.
+
+    Returns:
+        None, always.
+    """
     return None
 
 
 def align_phrase_chunks(source: str, dest: str):
+    """Align two phrase strings character-by-character and combine the result into token-level change chunks.
+
+    Runs the full alignment pipeline: get_alignments_changes (raw
+    character-level edit alignment) -> reduce_changes (merge consecutive
+    edits) -> tokenize_aligned_chunks (split on whitespace) ->
+    combine_tokenized_chunks (group into token-level chunks with
+    classified change types).
+
+    Args:
+        source: The source phrase string.
+        dest: The destination phrase string to align source against.
+
+    Returns:
+        The list of combined chunk dicts produced by
+        combine_tokenized_chunks, describing the token-level changes
+        between source and dest.
+
+    Raises:
+        AssertionError: Propagated from tokenize_aligned_chunks if an
+            internal whitespace-alignment invariant is violated; the
+            source and dest strings are printed before re-raising.
+    """
     aligned_chunks = get_alignments_changes(source, dest)
     reduced_chunks = reduce_changes(aligned_chunks)
     try:
@@ -243,6 +400,27 @@ def align_phrase_chunks(source: str, dest: str):
 
 
 def solve_whitespace_punctuation(combined_group: Dict[str, any]) -> Dict[str, any]:
+    """Pad source/dest text with whitespace so leading/trailing punctuation changes align cleanly.
+
+    When one side of a combined change chunk starts (or ends) with
+    punctuation followed (or preceded) by whitespace while the
+    corresponding position on the other side is an alphanumeric
+    character, this inserts a matching space on the alphanumeric side so
+    the two strings line up positionally, and tags the change type with
+    '_add_punctuation' or '_remove_punctuation' accordingly (stripping a
+    leading underscore if the change_type was empty).
+
+    Args:
+        combined_group: A combined chunk dict with 'source', 'dest',
+            'align_type', 'change_type', and 'chunks' keys, as produced by
+            combine_tokenized_chunks.
+
+    Returns:
+        A new combined chunk dict with the same keys, where 'source'
+        and/or 'dest' may have an extra leading/trailing space inserted,
+        and 'change_type' may have an '_add_punctuation' or
+        '_remove_punctuation' suffix appended.
+    """
     new_group = {
         'source': combined_group['source'],
         'dest': combined_group['dest'],
@@ -281,6 +459,33 @@ def solve_whitespace_punctuation(combined_group: Dict[str, any]) -> Dict[str, an
 
 
 def detect_word_swaps(phrases: Counter, tokenizer: Tokenizer, ngram_size: int = 2, debug: int = 0):
+    """Detect pairs of n-grams that are word-order permutations of each other and likely interchangeable.
+
+    For each phrase, tokenizes it and slides a window of `ngram_size`
+    tokens across it (skipping windows whose first or last token is pure
+    punctuation), recording each n-gram and which documents it occurs in.
+    For every n-gram, generates all its token permutations and checks
+    which other observed n-grams match a permutation, registering those as
+    candidate swaps. For each candidate swap, compares the surrounding
+    context (the rest of the phrase with the n-gram removed) between
+    documents containing each ngram variant: candidates whose surrounding
+    context lengths differ by no more than 4 characters and whose
+    Levenshtein similarity ratio is at least 0.7 (and not below a stricter
+    0.6 check) are confirmed as real word-order swaps. Exact word
+    repetitions (e.g. "ever and ever") are skipped to avoid spurious swap
+    detection.
+
+    Args:
+        phrases: Counter mapping phrase strings to their frequency.
+        tokenizer: Tokenizer used to split phrases into tokens.
+        ngram_size: Size of the token n-gram window to compare (default 2).
+        debug: Verbosity level for debug printing (0 = silent).
+
+    Returns:
+        A Counter mapping (ngram_string1, ngram_string2) tuples of
+        space-joined token strings to the number of times that swap
+        pattern was confirmed across phrase pairs.
+    """
     ngram_freq = Counter()
     candidate_swap_freq = Counter()
     in_doc = defaultdict(set)
@@ -362,6 +567,26 @@ def detect_word_swaps(phrases: Counter, tokenizer: Tokenizer, ngram_size: int = 
 
 
 def get_alignments_changes(source: str, dest: str, debug: int = 0):
+    """Compute the raw character-level alignment chunks between two strings.
+
+    Uses Levenshtein editops (insert/delete/replace) between source and
+    dest, and for each edit operation calls get_alignment_change to
+    produce the aligned ('unchanged') chunk preceding it plus the change
+    chunk itself, tracking index shifts as the matched/changed prefix is
+    consumed from both strings. Any remaining unmatched suffix of source
+    and dest after all edits are applied is appended as a final 'aligned'
+    chunk.
+
+    Args:
+        source: The source string to align.
+        dest: The destination string to align source against.
+        debug: Verbosity level for debug printing (0 = silent).
+
+    Returns:
+        A list of alignment chunk dicts, each with 'source', 'dest', and
+        'type' keys ('aligned', 'insert', 'delete', or 'replace'),
+        describing the full alignment between source and dest.
+    """
     edits = get_editops(source, dest)
     aligned_chunks = []
     source_shift = 0
@@ -402,6 +627,39 @@ def get_alignments_changes(source: str, dest: str, debug: int = 0):
 
 def get_aligned_token_freq(sub_phrase_freq: Counter, word_swap_freq: Counter,
                            lev_score_threshold: float = 0.6, debug: int = 0):
+    """Find similar sub-phrase pairs and aggregate their token-level alignment changes by frequency.
+
+    Builds a SkipgramSimilarity index over all sub-phrases and, for each
+    sub-phrase (processed most-frequent first, skipping ones already
+    checked), finds skipgram-similar sub-phrases (score_cutoff 0.75).
+    Before comparing, any known word swaps from word_swap_freq are applied
+    to the candidate similar phrase so word-order variants are normalized
+    before alignment. Pairs below `lev_score_threshold` overall Levenshtein
+    similarity are discarded. Remaining pairs are aligned with
+    align_phrase_chunks, and for each non-trivial ('replaced') aligned
+    chunk whose own source/dest similarity is at least 0.5, the
+    (source, dest, align_type, change_type) tuple's frequency is
+    incremented by the original sub-phrase's frequency.
+
+    Args:
+        sub_phrase_freq: Counter mapping sub-phrase strings to their
+            frequency.
+        word_swap_freq: Counter of (word_swap1, word_swap2) string pairs
+            considered interchangeable word-order variants, as produced by
+            detect_word_swaps.
+        lev_score_threshold: Minimum overall Levenshtein similarity ratio
+            required between a sub-phrase and a candidate similar phrase
+            for them to be aligned at all (default 0.6).
+        debug: Verbosity level for debug printing (0 = silent).
+
+    Returns:
+        A tuple (aligned_tokens_freq, token_freq):
+            aligned_tokens_freq: Counter mapping
+                (source, dest, align_type, change_type) tuples to their
+                aggregated frequency.
+            token_freq: Counter mapping each chunk's source text to the
+                total frequency it was observed with.
+    """
     skip_sim = SkipgramSimilarity(ngram_length=2, skip_length=2,
                                   terms=list(sub_phrase_freq.keys()))
 
@@ -456,9 +714,45 @@ def get_aligned_token_freq(sub_phrase_freq: Counter, word_swap_freq: Counter,
 
 
 class MapVariants:
+    """Builds a canonical-spelling/variant mapping from aligned-token frequency data.
+
+    Consumes the (source, dest, align_type, change_type) -> frequency
+    Counter produced by get_aligned_token_freq, and for each aligned token
+    pair (processed in order of increasing token count, then descending
+    frequency, via iterate_tokens) decides which of source/dest should be
+    treated as the preferred (canonical) form and which as its variant,
+    favouring the more frequent token and chaining/rewriting through
+    already-known mappings as new pairs are added. Skips pairs whose
+    reverse mapping is already registered, and resolves the rare cases
+    where the mapping would create both directions or conflict with prior
+    decisions.
+
+    Attributes:
+        atf: The input aligned-tokens-frequency Counter.
+        tf: The input per-token frequency Counter.
+        has_variant: Dict mapping each canonical (preferred) token to the
+            set of tokens that are variants of it.
+        is_variant_of: Dict mapping each variant token to its canonical
+            (preferred) token.
+        tokens: Set of all tokens (canonical and variant) seen so far.
+        min_freq: Minimum frequency an aligned token pair must have to be
+            considered.
+        debug: Verbosity level for debug printing (0 = silent).
+    """
 
     def __init__(self, aligned_tokens_freq: Counter, token_freq: Counter,
                  min_freq: int = 0, debug: int = 0):
+        """Initialize the mapper and immediately build the variant mapping.
+
+        Args:
+            aligned_tokens_freq: Counter mapping
+                (source, dest, align_type, change_type) tuples to their
+                frequency, as produced by get_aligned_token_freq.
+            token_freq: Counter mapping token strings to their frequency.
+            min_freq: Minimum frequency an aligned token pair must have to
+                be included in the mapping (default 0, i.e. no filtering).
+            debug: Verbosity level for debug printing (0 = silent).
+        """
         self.atf = aligned_tokens_freq
         self.tf = token_freq
         self.has_variant = defaultdict(set)
@@ -469,6 +763,23 @@ class MapVariants:
         self._get_variant_mapping()
 
     def _get_best_source(self, source: str):
+        """Resolve a candidate source token to its currently preferred canonical form.
+
+        Follows an existing is_variant_of mapping for the exact source
+        string, or (if the source has a leading/trailing whitespace
+        artifact) for its stripped form, re-applying the stripped
+        whitespace to the resolved preferred form and registering it as a
+        new variant mapping. Then rewrites any sub-phrases inside the
+        source using the current is_variant_of mapping via
+        rewrite_context_phrase, and resolves to that rewritten form's
+        preferred mapping if one exists.
+
+        Args:
+            source: The candidate source token or phrase string.
+
+        Returns:
+            The resolved, currently preferred form of source.
+        """
         if source in self.is_variant_of:
             source = self.is_variant_of[source]
             if self.debug > 0:
@@ -503,6 +814,20 @@ class MapVariants:
         return source
 
     def _sort_aligned_tokens(self):
+        """Order aligned token pairs for stable, frequency-aware variant mapping.
+
+        Filters out pairs below self.min_freq, swaps source/dest so the
+        more frequent token (by self.tf) is the source, swaps again to
+        avoid leading/trailing punctuation ending up on the source side,
+        skips pairs whose mapping (in either direction) is already
+        registered in self.is_variant_of, and deduplicates. Groups the
+        remaining pairs by the source's token count.
+
+        Returns:
+            A defaultdict mapping token-count (int) to a Counter of
+            (source, dest, change_type) tuples to their frequency, ready
+            to be iterated in order of increasing token count.
+        """
         done = set()
         sorted_aligned_tokens_freq = defaultdict(Counter)
         for aligned_tokens, freq in self.atf.most_common():
@@ -532,6 +857,13 @@ class MapVariants:
         return sorted_aligned_tokens_freq
 
     def iterate_tokens(self):
+        """Iterate aligned token pairs in processing order (shortest source first, most frequent first).
+
+        Yields:
+            Tuples of ((source, dest, change_type), freq), ordered first
+            by ascending number of tokens in source, then by descending
+            frequency within each token-count group.
+        """
         sorted_aligned_tokens_freq = self._sort_aligned_tokens()
         for num_tokens in sorted(sorted_aligned_tokens_freq):
             for aligned_tokens, freq in sorted_aligned_tokens_freq[num_tokens].most_common():
@@ -539,6 +871,12 @@ class MapVariants:
         return None
 
     def _replace_preferred_variant(self, old_pref: str, new_pref: str):
+        """Re-point all variants of old_pref to new_pref and demote old_pref to being a variant of new_pref.
+
+        Args:
+            old_pref: The currently preferred (canonical) token to demote.
+            new_pref: The new preferred (canonical) token to promote.
+        """
         if old_pref == new_pref:
             return None
         if self.debug > 0:
@@ -556,6 +894,28 @@ class MapVariants:
         self.is_variant_of[old_pref] = new_pref
 
     def _map_variant(self, source: str, dest: str):
+        """Register dest as a variant of source, resolving conflicts with any existing mappings.
+
+        Resolves source to its current best/preferred form, then checks
+        whether rewriting dest through the existing is_variant_of mapping
+        changes it: if so, compares the frequency of the resolved source
+        against the best-known source for the rewritten dest and
+        recursively re-maps whichever is less frequent to the other (or,
+        if the original source is a substring of the rewritten best
+        source, demotes the rewritten best source in favour of the
+        original source). If dest is itself already a preferred form with
+        its own variants, those variants are folded under source via
+        _replace_preferred_variant. If dest already has a registered
+        mapping, compares frequencies to decide whether to keep dest's
+        existing preferred form or switch to source. In all cases, dest
+        is finally recorded as a variant of source (after the above
+        adjustments), and self.tokens/self.has_variant/self.is_variant_of
+        are updated, followed by an internal consistency check.
+
+        Args:
+            source: The (candidate) preferred/canonical token.
+            dest: The token to register as a variant of source.
+        """
         source = self._get_best_source(source)
         if self.debug > 0:
             print(f'_map_variant - best_source: "{source}"')
@@ -618,6 +978,16 @@ class MapVariants:
         self._check_missing()
 
     def _get_variant_mapping(self) -> Dict[str, str]:
+        """Build the full is_variant_of mapping by processing all aligned token pairs in order.
+
+        Iterates iterate_tokens (shortest/most-frequent first) and calls
+        _map_variant on each (source, dest) pair to incrementally build
+        up self.is_variant_of and self.has_variant.
+
+        Returns:
+            The completed self.is_variant_of mapping (variant token ->
+            its canonical/preferred token).
+        """
         count = 0
         for aligned_tokens, freq in self.iterate_tokens():
             source, dest, change_type = aligned_tokens
@@ -629,6 +999,21 @@ class MapVariants:
         return self.is_variant_of
 
     def _check_missing(self):
+        """Assert internal consistency between self.tokens, self.has_variant, and self.is_variant_of.
+
+        Verifies every token in self.tokens appears as either a key in
+        has_variant or is_variant_of, that every key appearing in either
+        dict is also in self.tokens, that the two token sets are the same
+        size, and that every variant's recorded source actually lists
+        that variant in has_variant[source].
+
+        Raises:
+            AssertionError: If a token is missing from the expected
+                dict(s), or if a variant/source consistency check fails.
+            ValueError: If the size of self.tokens differs from the
+                combined set of dict keys (after printing both sets for
+                debugging).
+        """
         dict_tokens = set([token for token in list(self.has_variant.keys()) + list(self.is_variant_of.keys())])
         for token in self.tokens:
             if token not in self.has_variant and token not in self.is_variant_of:
@@ -654,6 +1039,18 @@ class MapVariants:
 
 def rewrite_context_phrases(context_phrases: List[str], is_variant_of: Dict[str, str],
                             debug: int = 0) -> Dict[str, str]:
+    """Rewrite a list of context phrases to their canonical form using a variant mapping.
+
+    Args:
+        context_phrases: List of phrase strings to rewrite.
+        is_variant_of: Mapping from variant token/phrase to its canonical
+            (preferred) form, as produced by MapVariants.
+        debug: Verbosity level for debug printing (0 = silent).
+
+    Returns:
+        A dict mapping each original phrase in context_phrases to its
+        rewritten (canonicalized) form.
+    """
     rewritten_context_phrases = {}
     for phrase in context_phrases:
         rewritten_context_phrases[phrase] = rewrite_context_phrase(phrase, is_variant_of, debug=debug)
@@ -661,6 +1058,25 @@ def rewrite_context_phrases(context_phrases: List[str], is_variant_of: Dict[str,
 
 
 def rewrite_context_phrase(phrase: str, is_variant_of: Dict[str, str], debug: int = 0) -> str:
+    """Rewrite a single phrase by substituting any contained variant tokens with their canonical form.
+
+    For every variant in is_variant_of, performs a whole-word regex
+    substitution of the variant for its preferred form wherever the
+    variant occurs as a word boundary-delimited substring of the phrase.
+    Note that variants are applied in dict iteration order, so a phrase
+    containing multiple variants may be rewritten through several
+    substitutions in sequence.
+
+    Args:
+        phrase: The phrase string to rewrite.
+        is_variant_of: Mapping from variant token/phrase to its canonical
+            (preferred) form.
+        debug: Verbosity level for debug printing (0 = silent).
+
+    Returns:
+        The rewritten phrase string, with any matched variants replaced
+        by their canonical form. Unchanged if no variant was found.
+    """
     rewritten_phrase = phrase
     for variant in is_variant_of:
         if re.search(fr"\b{variant}\b", rewritten_phrase):
@@ -675,6 +1091,22 @@ def rewrite_context_phrase(phrase: str, is_variant_of: Dict[str, str], debug: in
 
 
 def merge_phrase_context_freqs(context_freq):
+    """Merge per-formula-phrase context frequency counters into single pre/post/phrase counters.
+
+    Args:
+        context_freq: Dict with 'pre', 'post', and 'phrase' keys, where
+            'pre' and 'post' map each formula phrase to a Counter of its
+            preceding/following context phrases and their frequencies,
+            and 'phrase' is a Counter of formula phrase frequencies, as
+            produced by init_context_freq and populated during context
+            collection.
+
+    Returns:
+        A dict with the same 'pre', 'post', 'phrase' keys, where 'pre' and
+        'post' are now flat Counters (summed across all formula phrases)
+        mapping context phrase to total frequency, and 'phrase' is a
+        Counter of formula phrase frequencies summed from the input.
+    """
     merged_context_freq = {
         'pre': Counter(),
         'post': Counter(),
@@ -691,6 +1123,21 @@ def merge_phrase_context_freqs(context_freq):
 
 
 def merge_period_context_freqs(context_freq, periods):
+    """Merge per-period context frequency dicts into a single combined context frequency dict.
+
+    Args:
+        context_freq: Dict mapping a period key to a context frequency
+            dict (with 'pre' and 'post' keys, each mapping formula phrase
+            to a Counter of context phrase frequencies), as produced by
+            init_context_freq per period.
+        periods: Iterable of period keys to merge, in the order they
+            should be combined.
+
+    Returns:
+        A single context frequency dict (from init_context_freq) with
+        'pre' and 'post' Counters summed across all given periods, per
+        formula phrase.
+    """
     merged_context_freq = init_context_freq()
 
     for period in periods:
@@ -703,6 +1150,28 @@ def merge_period_context_freqs(context_freq, periods):
 
 
 def get_sub_phrase_freq(context_freq, tokenizer: Tokenizer, direction: str, debug: int = 0):
+    """Expand context phrases (occurring more than once) into all their token-prefix sub-phrases.
+
+    For each context phrase in the given direction occurring more than
+    once, tokenizes it and (for 'pre' direction, reversing the token order
+    first so growth proceeds outward from the formula) builds every
+    prefix sub-phrase (1 token, 2 tokens, ... up to the full phrase),
+    re-reversing 'pre' sub-phrases back to natural order, and accumulates
+    each sub-phrase's frequency (weighted by the full phrase's frequency).
+
+    Args:
+        context_freq: Dict with 'pre'/'post' keys mapping context phrase
+            to its frequency (e.g. the merged frequencies from
+            merge_phrase_context_freqs).
+        tokenizer: Tokenizer used to split context phrases into tokens.
+        direction: Either 'pre' or 'post', selecting which side's context
+            phrases to expand.
+        debug: Verbosity level for debug printing (0 = silent).
+
+    Returns:
+        A Counter mapping each sub-phrase string (space-joined tokens) to
+        its aggregated frequency.
+    """
     sub_phrase_freq = Counter()
     prefix_phrase_freq = Counter()
 
@@ -729,6 +1198,14 @@ def get_sub_phrase_freq(context_freq, tokenizer: Tokenizer, direction: str, debu
 
 
 def init_context_freq():
+    """Create an empty context frequency structure.
+
+    Returns:
+        A dict with 'pre' and 'post' keys mapping to empty
+        defaultdict(Counter) (per formula phrase, a Counter of context
+        phrase frequencies), and a 'phrase' key mapping to an empty
+        Counter (formula phrase frequencies).
+    """
     return {
         'pre': defaultdict(Counter),
         'post': defaultdict(Counter),
@@ -737,6 +1214,33 @@ def init_context_freq():
 
 
 def rewrite_context_variation(context_freq, tokenizer: Tokenizer, min_freq: int = 0):
+    """Detect spelling and word-order variation in formula context phrases and rewrite them to canonical forms.
+
+    This is the top-level entry point of the module's variant-detection
+    pipeline. For each direction ('pre' and 'post'): merges all per-phrase
+    context frequencies, expands context phrases into sub-phrases
+    (get_sub_phrase_freq), detects word-order swaps (detect_word_swaps),
+    aligns similar sub-phrases and aggregates their token-level changes
+    (get_aligned_token_freq), builds a canonical variant mapping
+    (MapVariants), and then rewrites every original context phrase
+    (per formula phrase) to its canonical form using that mapping.
+
+    Args:
+        context_freq: Dict with 'pre' and 'post' keys, each mapping
+            formula phrase to a Counter of context phrase frequencies
+            (e.g. as produced by init_context_freq and populated during
+            context collection).
+        tokenizer: Tokenizer used to split phrases into tokens.
+        min_freq: Minimum frequency an aligned token pair must have to be
+            included when building the variant mapping (default 0).
+
+    Returns:
+        A context frequency dict (from init_context_freq) with the
+        original 'pre'/'post' phrase-context frequencies rewritten to use
+        canonical spelling/word-order forms, plus an additional
+        'word_swap' key holding the detected word-swap frequencies per
+        direction.
+    """
     merged_context_freq = merge_phrase_context_freqs(context_freq)
     rewritten_context_freq = init_context_freq()
     rewritten_context_freq['word_swap'] = {

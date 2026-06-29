@@ -1,7 +1,7 @@
 from collections import Counter
 from collections import defaultdict
 from itertools import combinations
-from typing import Dict, Generator, Iterable, List, Tuple, Union
+from typing import Callable, Dict, Generator, Iterable, List, Optional, Set, Tuple, Union
 
 from fuzzy_search.tokenization.token import Doc
 from fuzzy_search.tokenization.token import Token
@@ -87,6 +87,7 @@ class FormulaSearch:
                  min_cooc_freq: int = None,
                  min_neighbour_cooc: int = None,
                  max_min_term_frac: float = 0.01,
+                 normaliser: Optional[Callable[[str], str]] = None,
                  report: bool = False, report_per: int = 1e4):
         """
         Initializes the FormulaSearch object with the given parameters.
@@ -103,13 +104,21 @@ class FormulaSearch:
         :type min_neighbour_cooc: int or None
         :param max_min_term_frac: The fraction threshold above which co-occurrences are too common.
         :type max_min_term_frac: float
+        :param normaliser: Optional callable mapping a surface token string to its canonical form
+            before it is indexed in the vocabulary.  When None (the default), tokens are stored
+            as-is and the vocabulary remains language-agnostic.  Supply a language-specific
+            function — for example ``normalise_spelling`` from
+            ``formula_detection.normalisation.rewrite_historic_dutch`` — only when the corpus
+            requires it.  The original surface form is always preserved in
+            ``Vocabulary.surface_to_canonical``.
+        :type normaliser: callable or None
         :param report: Whether to print progress updates during computation.
         :type report: bool
         :param report_per: Report progress after processing this number of documents.
         :type report_per: int
         """
-        self.full_vocab = Vocabulary()
-        self.min_freq_vocab = Vocabulary()
+        self.full_vocab = Vocabulary(normaliser=normaliser)
+        self.min_freq_vocab = Vocabulary(normaliser=normaliser)
         self.term_freq = Counter()
         self.doc_iterator = doc_iterator
         self.min_term_freq = min_term_freq
@@ -613,6 +622,299 @@ class FormulaSearch:
                     continue
                 candidate_doc_index[phrase].append(doc['id'])
         return candidate_doc_index
+
+    def build_variant_index(self,
+                            function_words: Optional[Set[str]] = None,
+                            seed_phrases: Optional[List[str]] = None,
+                            spelling_normaliser: Optional[Callable[[str], str]] = None,
+                            sim_threshold: float = 0.82,
+                            min_freq_for_edit_dist: int = 2,
+                            phrase_context=None):
+        """Build a VariantIndex from the current corpus term frequencies.
+
+        This is an optional post-init step.  Call it after ``__init__`` when
+        you want orthographic variant detection.  The result can be passed to
+        ``reindex_with_variants`` or used directly for canonicalisation.
+
+        The three evidence passes inside ``VariantIndex.build`` are each
+        skipped when their prerequisite is absent:
+
+        * Pass 1 (rule-based) — requires *spelling_normaliser*.
+        * Pass 2 (edit distance) — always runs; controlled by *sim_threshold*
+          and *min_freq_for_edit_dist*.
+        * Pass 3 (context-anchored) — requires *phrase_context*.
+
+        :param function_words: Optional set of words to restrict context
+            evidence to in pass 3.  Recommended for corpora with spelling
+            variation across time periods.  Pass None to use all context words.
+        :param seed_phrases: Optional list of known formula strings used as
+            anchors for pass 3 context analysis.  When None, all phrases with
+            context counts are used.
+        :param spelling_normaliser: Language-specific callable for pass 1.
+            Pass None (default) to skip rule-based normalisation and keep the
+            pipeline language-agnostic.
+        :param sim_threshold: Minimum combined similarity score [0–1] for
+            accepting a variant mapping in pass 2.
+        :param min_freq_for_edit_dist: Minimum corpus frequency a term must
+            have to be considered as a canonical target in pass 2.  Restricting
+            to frequent terms keeps the comparison set tractable.
+        :param phrase_context: Optional ``PhraseContext`` instance for pass 3.
+        :return: Populated ``VariantIndex``.
+        :rtype: formula_detection.variant_index.VariantIndex
+        """
+        from formula_detection.variant_index import VariantIndex
+        vi = VariantIndex(
+            term_freq=self.term_freq,
+            vocab=self.full_vocab,
+            spelling_normaliser=spelling_normaliser,
+            sim_threshold=sim_threshold,
+            function_words=function_words,
+            min_freq_for_edit_dist=min_freq_for_edit_dist,
+        )
+        vi.build(phrase_context=phrase_context, seed_phrases=seed_phrases)
+        return vi
+
+    def reindex_with_variants(self, variant_index) -> None:
+        """Collapse term_freq and cooc_freq onto canonical forms from *variant_index*.
+
+        After calling this method, ``self.term_freq`` and ``self.cooc_freq``
+        count canonical-form IDs rather than surface-form IDs.  The original
+        surface-to-canonical mapping is preserved in the ``VariantIndex`` and
+        in ``Vocabulary.surface_to_canonical``.
+
+        ``make_min_freq_vocabulary`` is re-run automatically so that
+        ``min_freq_vocab`` reflects the updated counts.
+
+        :param variant_index: A populated ``VariantIndex`` instance, as
+            returned by ``build_variant_index``.
+        """
+        self.term_freq = variant_index.reindex_counter(self.term_freq)
+        if self.cooc_freq:
+            # Reindex the pair counter: map each term ID in each pair to its
+            # canonical ID and accumulate counts.
+            new_cooc: Counter = Counter()
+            for (id1, id2), count in self.cooc_freq.items():
+                t1 = self.full_vocab.id2term(id1)
+                t2 = self.full_vocab.id2term(id2)
+                if t1 is None or t2 is None:
+                    continue
+                c1 = variant_index.canonical(t1)
+                c2 = variant_index.canonical(t2)
+                cid1 = self.full_vocab.term2id(c1)
+                cid2 = self.full_vocab.term2id(c2)
+                if cid1 is None:
+                    cid1 = id1
+                if cid2 is None:
+                    cid2 = id2
+                if cid1 > cid2:
+                    cid1, cid2 = cid2, cid1
+                new_cooc[(cid1, cid2)] += count
+            self.cooc_freq = new_cooc
+        self.make_min_freq_vocabulary()
+
+    def _iter_doc_tokens(self, doc: Union[Doc, List[str], List[Token]]) -> Generator[str, None, None]:
+        """Yield normalised token strings from a single document."""
+        if isinstance(doc, Doc):
+            for term in doc.normalized:
+                yield term
+        else:
+            for term in doc:
+                yield term.n if isinstance(term, Token) else term
+
+    def _flatten_doc_iterator(self) -> Generator[str, None, None]:
+        """Flatten self.doc_iterator into a single continuous token stream.
+
+        This re-reads the corpus from the start, so doc_iterator must be a
+        restartable iterable (e.g. a generator function or a class wrapping
+        a file on disk), not an exhausted one-shot iterator. This matches
+        how doc_iterator is already used elsewhere in this class (e.g.
+        calculate_term_frequencies is called once during __init__, and
+        calculate_co_occurrence_frequencies again later, both expecting a
+        fresh pass over the same iterable).
+        """
+        for doc in self.doc_iterator:
+            for token in self._iter_doc_tokens(doc):
+                yield token
+
+    @staticmethod
+    def _detect_communities(graph, weight: str = 'weight') -> Dict[str, int]:
+        """Run community detection on a phrase co-occurrence graph.
+
+        Kept for backward compatibility; delegates to
+        ``formula_detection.phrase_cooccurrence.detect_communities``, which
+        is shared with the same-formula-variant merging step in
+        ``formula_detection.motif.merge_overlapping_phrases``.
+
+        :param graph: A networkx.Graph with phrases as nodes.
+        :param weight: Edge attribute to use as edge weight.
+        :return: Dict mapping phrase -> community ID.
+        """
+        from formula_detection.phrase_cooccurrence import detect_communities
+        return detect_communities(graph, weight=weight)
+
+    def detect_document_patterns(self,
+                                  candidate_phrases: List[str],
+                                  seed_phrases: Optional[List[str]] = None,
+                                  function_words: Optional[Set[str]] = None,
+                                  spelling_normaliser: Optional[Callable[[str], str]] = None,
+                                  cooc_windows: List[int] = (100, 500, 2000),
+                                  cluster_distance_threshold: float = 0.4,
+                                  min_llr: float = 10.0,
+                                  community_window: int = None,
+                                  phrase_context=None,
+                                  token_stream: Iterable[str] = None,
+                                  merge_phrase_variants: bool = False,
+                                  variant_merge_window: int = 10,
+                                  variant_merge_min_support: int = 5,
+                                  variant_merge_min_lift: float = 3.0) -> dict:
+        """Run the full three-goal pipeline on *candidate_phrases*.
+
+        Chains variant detection (Goal 1), phrase clustering (Goal 2), and
+        phrase co-occurrence graph construction with community detection
+        (Goal 3) into a single call. Each component is optional — pass
+        fewer arguments to skip later stages.
+
+        Goal 3 requires scanning the corpus token stream once to count
+        phrase co-occurrences. By default this method re-reads
+        ``self.doc_iterator`` from the start for that pass (which requires
+        ``doc_iterator`` to be a restartable iterable — the same
+        requirement the rest of this class already places on it). Pass
+        ``token_stream`` explicitly to scan a different stream instead
+        (e.g. a held-out subset, or a stream of canonicalised tokens
+        you've already prepared).
+
+        :param candidate_phrases: Phrases to analyse (space-separated token
+            strings).
+        :param seed_phrases: Known partial formulas used as anchors for
+            variant detection pass 3 and as cluster seeds.
+        :param function_words: Restrict context evidence to these words.
+            Recommended for corpora with spelling variation.
+        :param spelling_normaliser: Language-specific callable for pass 1
+            of variant detection. Pass None to keep language-agnostic.
+        :param cooc_windows: Distance scales (in tokens) for the phrase
+            co-occurrence index.
+        :param cluster_distance_threshold: Ward linkage distance threshold
+            controlling clustering granularity.
+        :param min_llr: Minimum LLR score for a phrase-pair edge in the
+            co-occurrence graph used for community detection.
+        :param community_window: Which of ``cooc_windows`` to build the
+            community-detection graph from. Defaults to the largest window,
+            since document-type signatures are a longer-range pattern than
+            within-formula co-occurrence.
+        :param phrase_context: Optional pre-computed ``PhraseContext``
+            instance. When None, phrase vectorisation and clustering (Goal 2)
+            are skipped.
+        :param token_stream: Optional iterable of token strings to scan for
+            Goal 3. When None, ``self.doc_iterator`` is flattened and
+            re-read from the start.
+        :param merge_phrase_variants: When True, run
+            ``formula_detection.motif.merge_overlapping_phrases`` on
+            ``cooc_index.phrase_positions`` before community detection,
+            collapsing candidate phrases that are slices of the same
+            underlying formula (e.g. overlapping sliding-window n-grams)
+            onto one canonical representative. This both reduces the
+            number of distinct phrases fed into community detection and
+            removes a cross-occurrence aliasing artefact: without merging,
+            slice A2 from one occurrence of a formula and slice A1 from a
+            *different* occurrence can fall within ``community_window`` of
+            each other and look like two co-occurring entities, when they
+            are really the same formula seen twice. ``cooc_index`` is
+            updated in place (its ``phrase_positions``, ``phrase_freq``,
+            and ``cooc_freq`` are all remapped onto canonical phrases) so
+            this also benefits any downstream motif mining done with the
+            same ``cooc_index``.
+        :param variant_merge_window: Small distance scale (in tokens) used
+            to detect "these phrases are slices of the same formula" — see
+            ``merge_overlapping_phrases``. Should be much smaller than
+            ``community_window``.
+        :param variant_merge_min_support: Minimum co-occurrence count for a
+            phrase pair to be linked during merging.
+        :param variant_merge_min_lift: Minimum lift for a phrase pair to be
+            linked during merging. Kept high since this pass should only
+            catch very reliable, near-always co-occurring pairs.
+        :return: Dict with keys:
+            ``variant_index`` — populated ``VariantIndex``;
+            ``phrase_clusters`` — ``PhraseClusters`` or None;
+            ``cooc_index`` — ``PhraseCooccurrenceIndex``, indexed over the
+            stream (and, if ``merge_phrase_variants``, remapped onto
+            canonical phrases);
+            ``phrase_graph`` — ``networkx.Graph`` built at ``community_window``;
+            ``community_map`` — Dict[phrase, community_id] from Louvain
+            community detection, or ``{}`` if the graph had no edges above
+            ``min_llr``;
+            ``phrase_variant_map`` — Dict[phrase, canonical_phrase] from
+            merging, or None if ``merge_phrase_variants`` is False.
+        :rtype: dict
+        """
+        from formula_detection.variant_index import VariantIndex
+        from formula_detection.phrase_cooccurrence import PhraseCooccurrenceIndex
+
+        variant_index = self.build_variant_index(
+            function_words=function_words,
+            seed_phrases=seed_phrases,
+            spelling_normaliser=spelling_normaliser,
+            phrase_context=phrase_context,
+        )
+
+        phrase_clusters = None
+        if phrase_context is not None:
+            from formula_detection.phrase_vectorizer import PhraseVectorizer
+            from formula_detection.clustering import cluster_phrases
+            vectorizer = PhraseVectorizer(phrase_context, function_words=function_words)
+            matrix, ordered_phrases = vectorizer.vectorize(candidate_phrases)
+            if matrix.shape[1] > 0:
+                phrase_clusters = cluster_phrases(
+                    matrix, ordered_phrases,
+                    distance_threshold=cluster_distance_threshold,
+                )
+
+        cooc_windows = list(cooc_windows)
+        cooc_index = PhraseCooccurrenceIndex(candidate_phrases, windows=cooc_windows)
+        if token_stream is None:
+            token_stream = self._flatten_doc_iterator()
+        cooc_index.index_stream(token_stream, variant_index=variant_index)
+
+        phrase_variant_map = None
+        if merge_phrase_variants:
+            from formula_detection.motif import merge_overlapping_phrases, merge_phrase_positions
+            phrase_variant_map = merge_overlapping_phrases(
+                cooc_index.phrase_positions, window=variant_merge_window,
+                min_support=variant_merge_min_support, min_lift=variant_merge_min_lift,
+            )
+            cooc_index.phrase_positions = merge_phrase_positions(
+                cooc_index.phrase_positions, phrase_variant_map,
+                dedup_distance=max(variant_merge_window // 2, 1),
+            )
+            cooc_index.phrase_freq = Counter(
+                {p: len(pos) for p, pos in cooc_index.phrase_positions.items()}
+            )
+            cooc_index.phrases = set(cooc_index.phrase_positions.keys())
+            for window in cooc_index.cooc_freq:
+                remapped: Counter = Counter()
+                for (a, b), count in cooc_index.cooc_freq[window].items():
+                    ca = phrase_variant_map.get(a, a)
+                    cb = phrase_variant_map.get(b, b)
+                    if ca == cb:
+                        continue  # merged into the same canonical phrase; no longer a pair
+                    remapped[(min(ca, cb), max(ca, cb))] += count
+                cooc_index.cooc_freq[window] = remapped
+
+        if community_window is None:
+            community_window = max(cooc_windows) if cooc_windows else None
+        phrase_graph = None
+        community_map: Dict[str, int] = {}
+        if community_window is not None:
+            phrase_graph = cooc_index.build_graph(window=community_window, min_llr=min_llr)
+            community_map = self._detect_communities(phrase_graph)
+
+        return {
+            'variant_index': variant_index,
+            'phrase_clusters': phrase_clusters,
+            'cooc_index': cooc_index,
+            'phrase_graph': phrase_graph,
+            'community_map': community_map,
+            'phrase_variant_map': phrase_variant_map,
+        }
 
     def extract_candidate_variables(self, phrase_type: str, candidates: List[Union[str, List[str]]],
                                     min_cooc_freq: int = None, max_docs: int = None, *args, **kwargs):

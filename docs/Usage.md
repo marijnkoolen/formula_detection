@@ -1,20 +1,3 @@
-# Formula Detection
-
-Python tooling to detect formulaic language use in historic documents. 
-
-Beyond the core `FormulaSearch` phrase-frequency search documented below,
-the package also supports orthographic variant detection, semantic
-clustering of formulaic phrases, and phrase co-occurrence / document
-boundary detection in text streams with unknown document boundaries. See:
-
-- [docs/Document-Pattern-Detection.ipynb](docs/Document-Pattern-Detection.ipynb) — community detection over phrase co-occurrence
-- [docs/Motif-Based-Boundary-Detection.ipynb](docs/Motif-Based-Boundary-Detection.ipynb) — ordered multi-phrase motif mining and boundary detection
-- [docs/Phrase-Recurrence-Scale-Grouping.ipynb](docs/Phrase-Recurrence-Scale-Grouping.ipynb) — grouping candidate phrases by their characteristic recurrence interval, to separate phrases belonging to different levels of nested document structure (e.g. day-level, resolution-level, sub-decision-level formulas)
-- [docs/Phrase-Typing-Workbench.ipynb](docs/Phrase-Typing-Workbench.ipynb) — interactive (ipywidgets) human-in-the-loop workflow for categorising phrases into user-defined, multi-label types, with concordance browsing and co-occurrence-based suggestions for uncategorised phrases
-- [docs/Formulaic-Language-Over-Time.ipynb](docs/Formulaic-Language-Over-Time.ipynb) — combines all of the above into a single comparative analysis across three historical periods, testing the hypothesis that formulaic language use increased over time
-- [docs/Document-Pattern-Detection-Findings.md](docs/Document-Pattern-Detection-Findings.md) — design notes, what worked, what didn't, and why, including findings from testing against a real historical corpus
-
-
 # Formula Detection Usage
 
 The main class in the [formula_detection](https://pypi.org/project/formula_detection/) package is `FormulaSearch`. This instantiates a searcher that iterates over a list of tokenized texts and identifies candidate formulaic phrases.
@@ -44,6 +27,11 @@ This notebook shows how to create a simple `Iterable` class that allows you to s
 We start with the simplest form: texts as lists of tokens.
 
 
+```python
+%reload_ext autoreload
+%autoreload 2
+
+```
 
 To demonstrate the need for tokenization, we pass a single, untokenized sentence string to the searcher. Because the `FormulaSearch` document iterator iterates over the tokens in each document, and due to nature of Python strings, in this case, it iterates over each character in the sentence and treats it as a token.
 
@@ -466,7 +454,7 @@ We've seen a number of issues when using a simplistic tokenizer:
 2. Many tokens have puncuation attached to words, which makes them distinct terms (token types) from the same words without punctuation.
 3. The tokenizer is case-sensitive, which may be a hurdle if formulaic phrases have (unhelpful) variation in the use of case.
 
-A slightly more sophisticated tokenizer is provided by the [fuzzy-search]() package, which is one of the dependencies of the `formula_detection` package, so is already installed if you've used a package manager to install `formula_detection`. 
+A slightly more sophisticated tokenizer is provided by the [fuzzy-search](https://pypi.org/project/fuzzy-search/) package, which is one of the dependencies of the `formula_detection` package, so is already installed if you've used a package manager to install `formula_detection`. 
 
 
 ```python

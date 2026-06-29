@@ -70,6 +70,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/_autosummary/
 
 # PyBuilder
 target/
@@ -127,3 +128,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# IDE / tool-specific
+.idea/
+.claude/
+
+# Large research/example data and personal exploratory notebooks --
+# not part of the package; too large for git history.
+/data/
+/notebooks/

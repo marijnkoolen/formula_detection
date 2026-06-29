@@ -1,6 +1,7 @@
 from unittest import TestCase
 
 from fuzzy_search.tokenization.token import Tokenizer
+from fuzzy_search.tokenization.token import Token
 from fuzzy_search.tokenization.vocabulary import Vocabulary
 
 from formula_detection.patterns.pattern import Pattern
@@ -48,6 +49,28 @@ class TestPatternIndex(TestCase):
     def test_pattern_index_has_length(self):
         pattern_index = PatternIndex(self.pattern)
         self.assertEqual(1, len(pattern_index))
+
+    def test_pattern_index_populates_start_and_end_index_on_init(self):
+        pattern_index = PatternIndex(self.pattern)
+        self.assertEqual(True, self.pattern in pattern_index.start_index[self.pattern.start])
+        self.assertEqual(True, self.pattern in pattern_index.end_index[self.pattern.end])
+
+
+class TestPatternIndexFindPatternInDoc(TestCase):
+
+    def setUp(self) -> None:
+        self.tokenizer = Tokenizer()
+        self.doc = self.tokenizer.tokenize_doc('This is a sentence')
+
+    def test_find_pattern_in_doc_returns_true_when_match(self):
+        pattern = Pattern(['is', 'a', 'sentence'])
+        pattern_index = PatternIndex(pattern)
+        self.assertEqual(True, pattern_index.find_pattern_in_doc(self.doc))
+
+    def test_find_pattern_in_doc_returns_false_when_no_match(self):
+        pattern = Pattern(['is', 'a', 'doc'])
+        pattern_index = PatternIndex(pattern)
+        self.assertEqual(False, pattern_index.find_pattern_in_doc(self.doc))
 
 
 class TestPatternInDoc(TestCase):

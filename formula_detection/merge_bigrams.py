@@ -1,3 +1,23 @@
+"""
+merge_bigrams.py — Spelling-variant-aware bigram merging and scoring.
+
+Finds variant spellings of bigrams (e.g. OCR errors or historical
+spelling variation) using FastText word embeddings combined with edit
+distance, then merges those variants together at the token-stream level
+so that downstream frequency and collocation statistics treat spelling
+variants of the same bigram as a single unit.
+
+Provides:
+    - BigramMerger: finds bigram spelling variants via FastText similarity.
+    - BigramVariantSet: a mapping from variant bigrams to a preferred form.
+    - IndexedTokens / IndexToken / IndexBigram: token-stream representation
+      that supports iterative, order-preserving merging of bigrams.
+    - BigramFinder: NLTK-style bigram collocation scoring (PMI, likelihood
+      ratio) over unigram/bigram frequency distributions.
+    - Helper functions to build a BigramCollocationFinder from texts and
+      bigram variant sets, to read/write cached bigram data, and to select
+      a set of non-overlapping high-scoring bigrams.
+"""
 import math
 import pickle
 from typing import Dict, Iterable, List, Tuple, Union
@@ -27,12 +47,39 @@ TOTAL = -1
 
 
 def product(s):
+    """Compute the product of all elements in an iterable.
+
+    Args:
+        s: An iterable of numbers.
+
+    Returns:
+        The product of all elements in ``s``.
+    """
     return reduce(lambda x, y: x * y, s)
 
 
 class BigramMerger:
+    """Finds spelling-variant bigrams using FastText word embeddings.
+
+    Given one or more FastText models, looks up nearest-neighbour words
+    for each bigram's two component words, and treats any neighbour
+    combination that both occurs in the corpus's bigram frequency
+    distribution and is within an edit-distance threshold of the original
+    bigram as a spelling variant of it.
+
+    Attributes:
+        ft_models: Mapping of model type/name to a FastText model
+            (exposing a ``.wv.most_similar`` interface), or None entries
+            for unavailable models.
+    """
 
     def __init__(self, ft_models):
+        """Initialise the merger with a set of FastText models.
+
+        Args:
+            ft_models: Mapping of model type/name to FastText model
+                instance (or None if that model is unavailable).
+        """
         self.ft_models = ft_models
 
     def get_bigram_variants(self, selected_bigrams: List[str], bfd: FreqDist, max_levenshtein_dist: int = 4):
@@ -107,14 +154,28 @@ def validate_bigram_variant_set(bigram_variant_set: Union[Dict[Tuple[str, str],
 
 
 class BigramVariantSet:
+    """A mapping of bigram spelling variants to their preferred spelling.
+
+    Wraps a dict (or a list, which is converted to an identity mapping)
+    from a bigram to the preferred bigram it is a spelling variant of.
+    Preferred spellings map to themselves. Any bigram appearing only as a
+    value (preferred form) but not as a key is added as a key mapping to
+    itself, so the set is closed under its own value range.
+
+    Attributes:
+        bigram_variant_set: Dict mapping each bigram tuple to the
+            preferred bigram tuple it should be merged/normalised to.
+    """
 
     def __init__(self, bigram_variant_set: Union[Dict[Tuple[str, str], Tuple[str, str]], List[Tuple[str, str]]]):
-        """A mapping for a list of bigrams to their preferred spelling. preferred spellings map to themselves.
+        """Initialise from a dict mapping, or a list, of bigrams.
 
-        :param bigram_variant_set: either a dictionary with mappings from a bigram with tokens
-        that are spelling variants of the preferred tokens that they map to, or a list of bigrams that
-        have no spelling variants. In the latter case, the bigrams are turned into a dictionary in which they
-        map to themselves.
+        Args:
+            bigram_variant_set: Either a dict mapping each variant bigram
+                to the preferred bigram it should be merged to, or a list
+                of bigrams with no spelling variants. In the latter case,
+                the bigrams are turned into a dict in which they map to
+                themselves.
         """
         validate_bigram_variant_set(bigram_variant_set)
         if isinstance(bigram_variant_set, list):
@@ -132,20 +193,55 @@ class BigramVariantSet:
             print(f'added {len(missing)} missing bigrams that are only in the values:', missing)
 
     def __iter__(self):
+        """Iterate over the bigram keys in this variant set."""
         for bigram in self.bigram_variant_set:
             yield bigram
 
     def __contains__(self, bigram):
+        """Check whether a bigram is a key in this variant set.
+
+        Args:
+            bigram: The bigram tuple to check.
+
+        Returns:
+            True if ``bigram`` is a key in this variant set.
+        """
         return bigram in self.bigram_variant_set
 
     def __len__(self):
+        """Return the number of bigrams (keys) in this variant set."""
         return len(self.bigram_variant_set)
 
     def map(self, bigram):
+        """Look up the preferred spelling for a bigram.
+
+        Args:
+            bigram: The bigram tuple to map.
+
+        Returns:
+            The preferred bigram tuple that ``bigram`` maps to.
+
+        Raises:
+            KeyError: If ``bigram`` is not a key in this variant set.
+        """
         return self.bigram_variant_set[bigram]
 
 
 class IndexToken:
+    """A convenience representation of a (possibly merged) token string.
+
+    Combines a token's (or merged tokens') string representation with the
+    indexes of the original tokens it was built from, so that merged
+    tokens can still be traced back to their position(s) in the original
+    token list.
+
+    Attributes:
+        index: The index of this token string in an indexed token list.
+        token_string: The string representation of the token or the
+            merged sequence of tokens.
+        token_index_list: Tuple of indexes of the merged tokens in the
+            original list of text tokens.
+    """
 
     def __init__(self, index: int, token_string: str, token_index_list: Tuple[int, ...]):
         """A convenience representation of a token string from a list of tokens. This contains the token string
@@ -163,11 +259,19 @@ class IndexToken:
         self.token_index_list = tuple(token_index_list)
 
     def __repr__(self):
+        """Return a debug string representation of this IndexToken."""
         return f'IndexToken(index={self.index}, token_string="{self.token_string}", ' \
                f'token_index_list={self.token_index_list})'
 
 
 class IndexBigram:
+    """Combines two IndexTokens and their string-pair bigram representation.
+
+    Attributes:
+        index_token1: The first IndexToken in the bigram.
+        index_token2: The second IndexToken in the bigram.
+        bigram: Tuple of (index_token1.token_string, index_token2.token_string).
+    """
 
     def __init__(self, index_token1: IndexToken, index_token2: IndexToken):
         """An IndexBigram combines two IndexTokens and the bigram of their string representation.
@@ -183,6 +287,22 @@ class IndexBigram:
 
 
 class IndexedTokens:
+    """A token list that supports iterative, order-preserving bigram merging.
+
+    Keeps track, for each entry in ``token_indexes``, of which original
+    token index (or indexes, once merges have occurred) it corresponds
+    to, so that bigrams with skips can be hierarchically merged while
+    retaining the original token order.
+
+    Attributes:
+        tokens: The original list of string tokens.
+        indexed_tokens: Initially the same as ``tokens`` (kept for
+            reference; not updated by merges).
+        token_indexes: List of tuples of original-token indexes, one
+            tuple per current (possibly merged) token entry.
+        window_size: The size of the window from which to generate token
+            bigrams.
+    """
 
     def __init__(self, tokens: List[str], window_size: int = 3):
         """Create an IndexedTokens instance based on a list of string tokens and a window size.
@@ -201,20 +321,43 @@ class IndexedTokens:
         self.window_size = window_size
 
     def __len__(self):
+        """Return the number of original tokens (not the current merged count)."""
         return len(self.indexed_tokens)
 
     def __repr__(self):
+        """Return a debug string representation listing all current IndexTokens."""
         indexed_tokens_string = ',\n\t'.join([str(iw) for iw in self])
         if len(self) > 0:
             indexed_tokens_string = f'\n\t{indexed_tokens_string}\n'
         return f"IndexedTokens(indexed_tokens=[{indexed_tokens_string}])"
 
     def __iter__(self):
+        """Iterate over the current (possibly merged) tokens as IndexTokens.
+
+        Yields:
+            IndexToken instances, one per entry in ``token_indexes``, with
+            their string representation computed from the original
+            tokens they cover.
+        """
         for wi, token_index_list in enumerate(self.token_indexes):
             token_string = self._get_index_tokens_as_string(token_index_list)
             yield IndexToken(wi, token_string, token_index_list)
 
     def _get_index_tokens_as_string(self, token_index_list: Tuple[int, ...], default_infix: str = '__'):
+        """Render a tuple of original-token indexes as a single token string.
+
+        Joins the original token strings at the given indexes; if indexes
+        are non-consecutive (a skip), inserts ``default_infix`` repeated
+        for each skipped position between them.
+
+        Args:
+            token_index_list: Tuple of original-token indexes to render.
+            default_infix: String inserted (repeated per skipped position)
+                between non-consecutive token indexes.
+
+        Returns:
+            The combined token string.
+        """
         token_string = ''
         prev_token_index = None
         for curr_token_index in token_index_list:
@@ -276,13 +419,11 @@ class IndexedTokens:
                         debug: bool = False) -> None:
         """Apply a set of bigram variants.
 
-        :param bigram_variant_set: a set of bigram variants mapped to their preferred spelling
-        :type bigram_variant_set: BigramVariantSet
-        :param window_size: the size of the window from which to generate token bigrams.
-        :type window_size: int
-        :param debug: a debugging flag
-        :type debug: bool
-        Validate """
+        Args:
+            bigram_variant_set: A set of bigram variants mapped to their preferred spelling.
+            window_size: The size of the window from which to generate token bigrams.
+            debug: A debugging flag.
+        """
         to_apply = []
         for bigram in self.get_bigrams(window_size=window_size):
             token1 = bigram.index_token1
@@ -313,21 +454,61 @@ class IndexedTokens:
 
 
 def write_bigrams(bcf: BigramCollocationFinder, best_bigrams: List[str], bigram_file: int) -> None:
+    """Pickle a BigramCollocationFinder and its best bigrams to a file.
+
+    Args:
+        bcf: The BigramCollocationFinder to save.
+        best_bigrams: The list of best-scoring bigrams to save alongside it.
+        bigram_file: Path to the file to write the pickle to.
+
+    Returns:
+        None.
+    """
     with open(bigram_file, 'wb') as fh:
         pickle.dump({'bcf': bcf, 'best_bigrams': best_bigrams}, fh)
 
 
 def read_bigrams(bigram_file: str) -> Tuple[BigramCollocationFinder, List[str]]:
+    """Load a pickled BigramCollocationFinder and its best bigrams from a file.
+
+    Args:
+        bigram_file: Path to the pickle file written by ``write_bigrams``.
+
+    Returns:
+        A tuple of (BigramCollocationFinder, list of best bigrams).
+    """
     with open(bigram_file, 'rb') as fh:
         data = pickle.load(fh)
     return data['bcf'], data['best_bigrams']
 
 
 class BigramFinder:
+    """Scores bigrams using association measures over frequency distributions.
+
+    A lightweight, NLTK-collocations-style scorer built directly on
+    unigram and bigram frequency distributions, supporting pointwise
+    mutual information (PMI) and likelihood-ratio scoring (as in Manning
+    and Schutze).
+
+    Attributes:
+        ufd1: Frequency distribution of first-position unigrams.
+        ufd2: Frequency distribution of second-position unigrams.
+        bfd: Frequency distribution of bigrams.
+        window_size: The window size bigrams were collected with.
+        N: Total count of first-position unigram occurrences.
+    """
 
     _n = 0
 
     def __init__(self, ufd1, ufd2, bfd, window_size: int = 2):
+        """Initialise the finder with unigram and bigram frequency distributions.
+
+        Args:
+            ufd1: Frequency distribution of first-position unigrams.
+            ufd2: Frequency distribution of second-position unigrams.
+            bfd: Frequency distribution of bigrams.
+            window_size: The window size bigrams were collected with.
+        """
         self.ufd1 = ufd1
         self.ufd2 = ufd2
         self.bfd = bfd
