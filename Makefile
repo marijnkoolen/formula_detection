@@ -1,14 +1,14 @@
 
-build: make_editable build_wheel twine_check
+build: make_editable build_wheel check
 
 bump_version_major:
-	bumpver update --major
+	bumpver update --major --no-push
 
 bump_version_minor:
-	bumpver update --minor
+	bumpver update --minor --no-push
 
 bump_version_patch:
-	bumpver update --patch
+	bumpver update --patch --no-push
 
 make_editable:
 	python3 -m pip install -e .
@@ -17,16 +17,15 @@ build_wheel:
 	poetry lock
 	poetry build
 
-twine_check:
+check:
 	twine check dist/*
 
-# Credentials are read by twine from the environment or from ~/.pypirc --
-# never hardcode a token here. To publish:
-#   export TWINE_USERNAME=__token__
-#   export TWINE_PASSWORD=<your PyPI/TestPyPI API token>
-# or configure ~/.pypirc with [pypi] / [testpypi] sections instead.
-twine_test:
-	twine upload -r testpypi dist/* --verbose
+# Credentials are configured once via `poetry config pypi-token.pypi <token>`
+# (and `poetry config pypi-token.testpypi <token>` for the test repository,
+# after `poetry config repositories.testpypi https://test.pypi.org/legacy/`)
+# -- never hardcode a token in this file or commit one anywhere in the repo.
+publish_testpypi:
+	poetry publish -r testpypi
 
-twine_upload:
-	twine upload -r pypi dist/* --verbose
+publish_pypi:
+	poetry publish
