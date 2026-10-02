@@ -10,7 +10,7 @@ and has no effect on downstream processing.
 from collections import Counter
 from typing import Callable, Dict, List, Optional, Set
 
-from fuzzy_search.similarity import SkipgramSimilarity
+from fuzzy_search.analysis.similarity import SkipgramSimilarity
 
 from formula_detection.variation.edit import compute_variant_similarity
 from formula_detection.vocabulary import Vocabulary

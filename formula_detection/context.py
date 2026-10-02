@@ -13,7 +13,7 @@ from collections import defaultdict
 from collections import Counter
 from typing import Dict, Iterable, List, Optional, Set, Union
 
-from fuzzy_search.similarity import SkipgramSimilarity
+from fuzzy_search.analysis.similarity import SkipgramSimilarity
 from fuzzy_search.tokenization.token import Doc
 from fuzzy_search.tokenization.token import Token
 

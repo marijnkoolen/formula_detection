@@ -18,8 +18,8 @@ classifiers = [
 packages = [{ include = "formula_detection" }]
 
 [tool.poetry.dependencies]
-python = "^3.8,<3.13"
-fuzzy-search = "^2.4.5"
+python = "^3.11,<3.13"
+fuzzy-search = ">=3.0.1, < 4.0.0"
 scikit-learn = ">=1.0"
 scipy = ">=1.9"
 networkx = ">=3.0"

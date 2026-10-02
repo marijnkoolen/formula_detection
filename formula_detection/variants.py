@@ -22,7 +22,7 @@ from collections import defaultdict
 from itertools import permutations
 from typing import Dict, List
 
-from fuzzy_search.similarity import SkipgramSimilarity
+from fuzzy_search.analysis.similarity import SkipgramSimilarity
 from fuzzy_search.tokenization.token import Tokenizer
 from fuzzy_search.tokenization.string import score_levenshtein_similarity_ratio
 from Levenshtein import editops as get_editops
